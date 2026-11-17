@@ -1,0 +1,7 @@
+* text=auto eol=lf
+
+# The retained runtime has byte-level regression baselines across platforms.
+relay/extension/** -text -whitespace
+*.png -text
+*.jpg -text
+*.ico -text

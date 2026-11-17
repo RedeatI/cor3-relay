@@ -1,121 +1,67 @@
-# COR3 Helper 2.0 — Salta Fork
+# COR3 Relay
 
-**English** · [简体中文](./README.zh-CN.md)
+[简体中文](README.zh-CN.md) · [Upstream](https://github.com/SaltApocalypse/cor3-helper) · [MIT license](LICENSE)
 
-A Chrome extension for [cor3.gg](https://cor3.gg) that monitors markets, jobs, expeditions, daily ops, inventory and loadout, and provides optional automation.
+A Chrome and Edge companion for [COR3](https://cor3.gg): page-local puzzle
+automation, account-scoped settings, market batches, Daily scheduling,
+expeditions and diagnostics.
 
-This branch (`v2`) contains the **2.0 release line**. It is not the stable v1 extension.
+An independent public fork of **SaltApocalypse/cor3-helper**, originally based
+on **Femtoce11/cor3-helper**. Upstream history and copyright notices are retained.
+This is not an official COR3 or Salta release.
 
-> **Personal fork:** [SaltApocalypse/cor3-helper](https://github.com/SaltApocalypse/cor3-helper), based on [Femtoce11/cor3-helper](https://github.com/Femtoce11/cor3-helper). This is not an official upstream release.
->
-> - Fork releases: <https://github.com/SaltApocalypse/cor3-helper/releases>
-> - Upstream project: <https://github.com/Femtoce11/cor3-helper>
-
-## Status
-
-- Version: `package.json` `version` + `cor3Fork.releaseLabel` for releases; local builds append `cor3Fork.build`
-- Branch: `v2`
-- Architecture: typed, layered 2.0 rewrite (domain / application / infrastructure / contexts)
-- Build output: `dist/` (Manifest V3)
-- Verification: typecheck, lint, Vitest (93 files / 445 tests) and build pass at `2.0.4-salta.268`; CI runs the same checks on pull requests
-- Known gaps: the static catalog artifact still needs a real module dump, and background/content/portal plus UI rendering tests remain incomplete; see [feature inventory](./docs/architecture/cor3-helper-2.0-feature-inventory-and-tech-debt.md)
-
-## Requirements
-
-- Node.js 24+
-- npm 11+
-- Chrome 120+ (Chromium; the full UI can run in the side panel or a detached window)
+Relay **2.1.0** lives in [`relay/`](relay/README.md). The upstream **2.0.4**
+TypeScript rewrite remains in `src/` as a separately buildable reference.
+The [architecture decision](docs/architecture/relay-runtime-import.md) explains
+the compatibility boundary and remaining technical debt. Only **Chrome and
+Edge** distributions are published here.
 
 ## Build
 
-```bash
-npm install
-npm run build       # -> dist/
+Requires Node.js 24 or newer.
+
+```sh
+npm ci
+npm run relay:check
+npm run relay:lint
+npm run relay:test
+npm run relay:build
 ```
 
-Load the extension:
+Load `build/relay/Chrome/extension` or `build/relay/Edge/extension` as an unpacked
+extension. Keep an installation's folder and identity stable for future updates;
+changing the path or uninstalling can separate or remove saved configuration.
+No personal profiles, account data, logs or extension signing keys are included.
+Publishing this source does not update existing installations.
 
-1. Open `chrome://extensions`
-2. Enable **Developer mode**
-3. Choose **Load unpacked** and select the `dist/` directory
-4. Open <https://cor3.gg>
+## Relay 2.1
 
-Minified build:
+- Account/document isolation, persistent browser-account binding and serialized
+  settings writes. Explicit off values remain authoritative.
+- Three puzzle solvers operate on their current page without waiting for
+  account identification.
+- Daily and market automation defaults, missed-refresh catch-up after reopening,
+  and one batch per uncovered current task pool. Timed challenges and occupied
+  endpoints defer new work.
+- Market reads pause during a batch. Completion checks cached absolute deadlines
+  against the system clock. Unknown outcomes are retained for review.
+- Coalesced reads, compact summaries, bounded log persistence, correlated progress
+  and responsive in-page controls.
 
-```bash
-npm run build:min
+Tests use isolated fixtures and production functions. They do not prove live
+rewards, real CPU/FPS improvements, long background operation or OS sleep recovery.
+See [`relay/README.md`](relay/README.md).
+
+## Upstream reference
+
+```sh
+npm run typecheck
+npm run lint
+npm test
+npm run build
 ```
 
-## Release
-
-Releases are tag-driven. Set `package.json` `version`, push a matching tag, and GitHub Actions builds and publishes `COR3 Helper v<version>-salta.zip`.
-
-```bash
-# package.json: "version": "2.1.0"
-git add package.json
-git commit -m "chore(release): v2.1.0-salta"
-git tag v2.1.0-salta
-git push origin v2
-git push origin v2.1.0-salta
-```
-
-The tag must equal `<version>-<cor3Fork.releaseLabel>`. Local builds use `<version>-salta.<build>`; releases use `<version>-salta`. Both use the `COR3 Helper 2.0` identity and extension key.
-
-## Scripts
-
-| Command | Purpose |
-|---|---|
-| `npm run build` | Build the extension into `dist/` |
-| `npm run build:min` | Minified build |
-| `npm run typecheck` | Strict TypeScript check |
-| `npm run lint` | oxlint over `src/` |
-| `npm test` | Vitest unit tests |
-| `npm run format` | Format source with Prettier |
-| `npm run clean` | Remove `dist/` and `dist-tools/` |
-| `npm run bump:build` | Increment `cor3Fork.build` for a functional update |
-| `npm run catalog` | Build/validate the static item catalog CLI |
-
-## Project structure
-
-```
-src/
-  kernel/          Result, IDs, clocks, shared primitives
-  contracts/       Zod boundary schemas (bridge, storage, game, tab)
-  domains/         Pure domain model and rules
-  application/     Use cases and ports
-  infrastructure/  Chrome, storage, WebSocket and logging adapters
-  contexts/        background, content, main-world, popup, sidepanel, devtools
-  ui/              Preact components, hooks, view models, i18n
-  html/            Popup / side panel / DevTools HTML and CSS
-  tools/           Catalog CLI and developer tooling
-build.js           esbuild build script
-manifest.json      Manifest V3 source (version injected at build time)
-```
-
-`dist/` is generated and ignored by git.
-
-## Documentation
-
-- [Architecture](./ARCHITECTURE.md)
-- [Module status](./MODULES.md)
-- [Architecture decision record](./docs/architecture/cor3-helper-2.0-architecture-decision-record.md)
-- [Architecture audit](./docs/architecture/cor3-helper-2.0-architecture-audit.md)
-- [Feature inventory and technical debt](./docs/architecture/cor3-helper-2.0-feature-inventory-and-tech-debt.md)
-- [H8 background decomposition design](./docs/architecture/cor3-helper-2.0-h8-background-decomposition-design.md)
-- [Settings sync assessment](./docs/architecture/cor3-helper-2.0-settings-sync-assessment.md)
-- [Static catalog generation](./catalog/README.md)
-- [Security notes](./docs/security.md)
-
-## Contributing
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md) and [AGENTS.md](./AGENTS.md) for the project rules, module boundaries and definition of done.
-
-## Disclaimer
-
-This extension is not affiliated with, partnered with, or endorsed by cor3.gg, Fragmentary Order, or Rant Gaming Studios.
-
-Automation may be detectable by the game's developers and could put your account at risk. Understand what a feature does before enabling it. The authors assume no liability for consequences of use.
-
-## License
-
-See [LICENSE](./LICENSE).
+These check and build the original typed rewrite into `dist/`, separately from
+Relay. See [ARCHITECTURE.md](ARCHITECTURE.md), [MODULES.md](MODULES.md),
+[upstream releases](https://github.com/SaltApocalypse/cor3-helper/releases)
+and [contributor instructions](AGENTS.md).

@@ -1,3 +1,10 @@
+# COR3 Relay fork scope
+
+Relay's retained compatibility runtime is governed by `relay/AGENTS.md` and
+`docs/architecture/relay-runtime-import.md`. The upstream rules below apply
+to the unchanged typed rewrite in `src/`; the documented runtime import is
+a separate boundary. Public Relay distributions target Chrome and Edge only.
+
 # AGENTS.md — cor3-helper (v2)
 
 ## Current branch

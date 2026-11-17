@@ -22,7 +22,11 @@
         "test:watch": "vitest",
         "clean": "node -e \"for (const d of ['dist','dist-tools']) require('fs').rmSync(d,{recursive:true,force:true})\"",
         "bump:build": "esbuild src/tools/release/bump.ts --bundle --platform=node --format=cjs --outfile=dist-tools/bump.cjs && node dist-tools/bump.cjs",
-        "catalog": "esbuild src/tools/catalog/cli.ts --bundle --platform=node --format=esm --outfile=dist-tools/catalog.mjs && node dist-tools/catalog.mjs"
+        "catalog": "esbuild src/tools/catalog/cli.ts --bundle --platform=node --format=esm --outfile=dist-tools/catalog.mjs && node dist-tools/catalog.mjs",
+        "relay:build": "node relay/tools/build.ts",
+        "relay:check": "tsc --noEmit -p relay/tsconfig.json && node relay/tools/check.ts",
+        "relay:lint": "oxlint relay/tools",
+        "relay:test": "node relay/tools/test.ts"
     },
     "devDependencies": {
         "@types/chrome": "^0.3.7",

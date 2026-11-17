@@ -1,0 +1,138 @@
+{
+  "manifest_version": 3,
+  "name": "COR3 Relay",
+  "version": "2.1.0",
+  "description": "COR3 Relay — browser-scoped COR3 automation, market scheduling, expeditions and diagnostics. Based on COR3 Helper.",
+  "permissions": [
+    "storage",
+    "scripting",
+    "activeTab",
+    "tabs",
+    "alarms",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://cor3.gg/*",
+    "https://os.cor3.gg/*",
+    "https://svc-corie.cor3.gg/*",
+    "https://raw.githubusercontent.com/*"
+  ],
+  "devtools_page": "devtools.html",
+  "background": {
+    "service_worker": "center-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://cor3.gg/*",
+        "https://os.cor3.gg/*"
+      ],
+      "js": [
+        "automation-master-core.js",
+        "automation-main.js",
+        "run-log.js",
+        "console-logger.js",
+        "notepack.min.js",
+        "msgpack-codec.js",
+        "full-effect-projection.js",
+        "loadout-algorithms.js",
+        "read-runtime.js",
+        "expedition-cost.js",
+        "content-early.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://cor3.gg/*",
+        "https://os.cor3.gg/*"
+      ],
+      "js": [
+        "solver-page-document.js",
+        "center-identity.js",
+        "center-store.js",
+        "automation-startup-policy.js",
+        "automation-master-core.js",
+        "automation-client.js",
+        "run-log.js",
+        "console-logger.js",
+        "errors.js",
+        "ws-messages.js",
+        "expedition-cost.js",
+        "expedition-priority.js",
+        "helper-ui-shell.js",
+        "expedition-diagnostics.js",
+        "daily-schedule.js",
+        "network-coordinator.js",
+        "job-batch.js",
+        "auto-market-jobs.js",
+        "inpage-controls-core.js",
+        "market-refresh-clock.js",
+        "content.js",
+        "page-data-loader.js",
+        "inpage-controls.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://svc-corie.cor3.gg/games/simple-hack*"
+      ],
+      "js": [
+        "automation-master-core.js",
+        "automation-main.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://svc-corie.cor3.gg/games/simple-hack*"
+      ],
+      "js": [
+        "center-store.js",
+        "automation-startup-policy.js",
+        "automation-master-core.js",
+        "automation-client.js",
+        "simple-decrypt-bridge.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "icons": {
+    "16": "icon/favicon16.png",
+    "48": "icon/favicon48.png",
+    "128": "icon/favicon128.png"
+  },
+  "action": {
+    "default_icon": "icon/favicon128.png",
+    "default_popup": "popup.html",
+    "default_title": "COR3 Relay"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "msgpack-codec.js",
+        "ws-interceptor.js",
+        "decrypt-solver.js",
+        "daily-hack-solver.js",
+        "auto-job-solver.js",
+        "auto-valuable-seller.js",
+        "ice-wall-solver.js",
+        "simple-decrypt-solver.js",
+        "devtools-log-viewer.html",
+        "devtools-log-viewer.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "version_name": "2.1.0-relay-chrome",
+  "side_panel": {
+    "default_path": "popup.html"
+  }
+}

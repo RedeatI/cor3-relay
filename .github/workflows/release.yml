@@ -1,4 +1,4 @@
-name: Release
+name: Upstream reference release
 
 # Release by pushing a tag that matches package.json version + releaseLabel:
 #   git tag v2.1.0-salta
@@ -16,6 +16,8 @@ concurrency:
 
 jobs:
   release:
+    # Never publish an inherited Salta release from the Relay fork.
+    if: github.repository == 'SaltApocalypse/cor3-helper'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

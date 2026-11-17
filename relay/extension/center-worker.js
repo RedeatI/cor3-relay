@@ -1,0 +1,1 @@
+importScripts('solver-profile.js','solver-page-scope.js','center-migration.js','center-profile.js','center-feature-defaults.js','center-binding.js','center-store.js','automation-startup-policy.js','automation-master-core.js','automation-controller.js','run-log.js','console-logger.js','errors.js','daily-background.js','background.js');

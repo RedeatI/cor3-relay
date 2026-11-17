@@ -1,4 +1,4 @@
-name: CI
+name: Relay and upstream CI
 
 on:
   push:
@@ -42,3 +42,23 @@ jobs:
 
       - name: Verify build identity
         run: node -e "const p=require('./package.json');const m=require('./dist/manifest.json');const f=p.cor3Fork||{};const v=f.releaseLabel?p.version+'-'+f.releaseLabel+'.'+(f.build||1):p.version;if(m.version_name!==v){console.error('version mismatch:',m.version_name,'!=',v);process.exit(1)}"
+
+      - name: Check Relay public inputs and tooling
+        run: npm run relay:check
+
+      - name: Lint Relay tooling
+        run: npm run relay:lint
+
+      - name: Test Chrome and Edge packages
+        run: npm run relay:test
+
+      - name: Upload Chrome and Edge packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: COR3-Relay-2.1.0-Chrome-Edge
+          path: |
+            build/relay/Chrome/extension/
+            build/relay/Chrome/SHA256.json
+            build/relay/Edge/extension/
+            build/relay/Edge/SHA256.json
+          if-no-files-found: error

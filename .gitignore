@@ -5,3 +5,6 @@ RELEASE_NOTES.md
 cor3-ws-export*.json
 *.zip
 *.log
+
+# Relay generated browser packages
+/build/

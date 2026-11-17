@@ -1,0 +1,7 @@
+{
+  "name": "cor3-relay-runtime",
+  "version": "2.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" }
+}

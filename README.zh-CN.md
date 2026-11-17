@@ -1,121 +1,56 @@
-# COR3 Helper 2.0 — Salta 分支
+# COR3 Relay
 
-[English](./README.md) · **简体中文**
+[English](README.md) · [上游项目](https://github.com/SaltApocalypse/cor3-helper) · [MIT 许可证](LICENSE)
 
-这是一个用于 [cor3.gg](https://cor3.gg) 的 Chrome 扩展，可监控市场、任务、远征、日常任务、库存与配装，并提供可选自动化。
+面向 Chrome 和 Edge 的 COR3 辅助插件，提供当前页面自动解密、账号设置、
+市场任务、Daily 调度、远征选择与状态日志。
 
-当前 `v2` 分支包含 **2.0 发布线**。它不是稳定的 v1 扩展。
+本项目是 **SaltApocalypse/cor3-helper** 的独立公开 fork，原始项目为
+**Femtoce11/cor3-helper**。保留上游历史与版权声明，不代表 COR3 官方或 Salta 发布。
 
-> **个人分支：** [SaltApocalypse/cor3-helper](https://github.com/SaltApocalypse/cor3-helper)，基于 [Femtoce11/cor3-helper](https://github.com/Femtoce11/cor3-helper)。并非上游官方发布。
->
-> - 本分支发布页：<https://github.com/SaltApocalypse/cor3-helper/releases>
-> - 上游项目：<https://github.com/Femtoce11/cor3-helper>
+我们的 **2.1.0** 兼容运行层位于 [`relay/`](relay/README.md)；上游 **2.0.4**
+TypeScript 重写保留在 `src/`，可单独构建。两者关系与技术债见
+[架构记录](docs/architecture/relay-runtime-import.md)。这里仅发布 **Chrome 和 Edge**。
 
-## 当前状态
+## 构建与加载
 
-- 版本：发布版见 `package.json` 的 `version` + `cor3Fork.releaseLabel`；本地构建追加 `cor3Fork.build`
-- 分支：`v2`
-- 架构：分层、强类型的 2.0 重写（domain / application / infrastructure / contexts）
-- 构建输出：`dist/`（Manifest V3）
-- 验证状态：`2.0.4-salta.268` 下 typecheck、lint、Vitest（93 个文件 / 445 个测试）和构建均通过；PR 会运行同样的 CI 检查
-- 已知缺口：静态物品目录仍需真实模块转储，后台/内容/portal 与 UI 渲染测试仍不完整；见[功能清单与技术债](./docs/architecture/cor3-helper-2.0-feature-inventory-and-tech-debt.md)
+需要 Node.js 24 或以上版本。
 
-## 环境要求
-
-- Node.js 24+
-- npm 11+
-- Chrome 120+（Chromium；完整界面可在侧边栏或独立窗口中运行）
-
-## 构建
-
-```bash
-npm install
-npm run build       # -> dist/
+```sh
+npm ci
+npm run relay:check
+npm run relay:lint
+npm run relay:test
+npm run relay:build
 ```
 
-加载扩展：
+在扩展管理页加载对应目录：
 
-1. 打开 `chrome://extensions`
-2. 开启 **开发者模式**
-3. 点击 **加载已解压的扩展程序**，选择 `dist/` 目录
-4. 打开 <https://cor3.gg>
+- Chrome：`build/relay/Chrome/extension`
+- Edge：`build/relay/Edge/extension`
 
-压缩构建：
+后续更新保留同一加载目录和扩展身份。更换路径、卸载或安装第二份扩展，
+可能使用不同存储。仓库不包含个人账号、浏览器配置、日志或扩展签名身份。
+发布代码不会修改正在使用的插件。
 
-```bash
-npm run build:min
-```
+## 2.1 的行为
 
-## 发布
+- 保留浏览器账号绑定、账号和文档隔离、设置写入队列，显式关闭的设置仍生效。
+- 三个解密功能使用当前页面的许可，无需等待账号识别后再接管小游戏。
+- Daily、市场刷新和自动市场任务具备默认开启逻辑。重开浏览器后，读到未覆盖的
+  当前任务池可以补跑一轮；限时小游戏运行或端点占用时等待。
+- 执行市场任务期间停止市场读取和刷新；结束后用缓存截止时间与系统时间核对，
+  仅处理新的当前任务池。结果未知时保留待核，不盲目重复提交。
+- 合并并发读取、使用小缓存摘要、限制日志积压，进度和队列使用关联票据。
+  页面面板适配缩放和小窗口。
 
-发布由 tag 驱动：修改 `package.json` 的 `version`，推送匹配的 tag，GitHub Actions 会自动构建并发布 `COR3 Helper v<version>-salta.zip`。
+远征选择、预算与设置按账号隔离；自动派遣依照用户已配置的远征设置。
+测试使用隔离数据和生产函数，不会登录或操作真实账号。离线通过不能代表
+实号奖励、真实 CPU/FPS、长时间后台或系统休眠恢复已经验证。
 
-```bash
-# package.json: "version": "2.1.0"
-git add package.json
-git commit -m "chore(release): v2.1.0-salta"
-git tag v2.1.0-salta
-git push origin v2
-git push origin v2.1.0-salta
-```
+## 保留的上游
 
-tag 必须等于 `<version>-<cor3Fork.releaseLabel>`。本地构建使用 `<version>-salta.<build>`；发布版使用 `<version>-salta`。两者共用 `COR3 Helper 2.0` 身份和扩展 key。
-
-## 常用命令
-
-| 命令 | 用途 |
-|---|---|
-| `npm run build` | 构建到 `dist/` |
-| `npm run build:min` | 压缩构建 |
-| `npm run typecheck` | 严格 TypeScript 检查 |
-| `npm run lint` | 对 `src/` 运行 oxlint |
-| `npm test` | 运行 Vitest 单元测试 |
-| `npm run format` | 使用 Prettier 格式化源码 |
-| `npm run clean` | 删除 `dist/` 与 `dist-tools/` |
-| `npm run bump:build` | 功能性更新时递增 `cor3Fork.build` |
-| `npm run catalog` | 构建/校验静态物品目录 CLI |
-
-## 目录结构
-
-```
-src/
-  kernel/          Result、ID、时钟等基础类型
-  contracts/       Zod 边界 schema（bridge、storage、game、tab）
-  domains/         纯领域模型与规则
-  application/     用例与端口
-  infrastructure/  Chrome、存储、WebSocket、日志适配器
-  contexts/        background、content、main-world、popup、sidepanel、devtools
-  ui/              Preact 组件、hooks、view models、i18n
-  html/            Popup / 侧边栏 / DevTools HTML 与 CSS
-  tools/           目录 CLI 与开发工具
-build.js           esbuild 构建脚本
-manifest.json      Manifest V3 源文件（构建时注入版本号）
-```
-
-`dist/` 为生成目录，已被 git 忽略。
-
-## 文档入口
-
-- [架构说明](./ARCHITECTURE.md)
-- [模块状态](./MODULES.md)
-- [架构决策记录](./docs/architecture/cor3-helper-2.0-architecture-decision-record.md)
-- [架构审计](./docs/architecture/cor3-helper-2.0-architecture-audit.md)
-- [功能清单与技术债](./docs/architecture/cor3-helper-2.0-feature-inventory-and-tech-debt.md)
-- [H8 后台拆分设计](./docs/architecture/cor3-helper-2.0-h8-background-decomposition-design.md)
-- [设置同步评估](./docs/architecture/cor3-helper-2.0-settings-sync-assessment.md)
-- [静态物品目录生成](./catalog/README.md)
-- [安全说明](./docs/security.md)
-
-## 参与开发
-
-请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md) 与 [AGENTS.md](./AGENTS.md)，其中包含模块边界、硬性规则和完成标准。
-
-## 免责声明
-
-本扩展与 cor3.gg、Fragmentary Order、Rant Gaming Studios 无任何关联、合作或背书关系。
-
-自动化行为可能被游戏开发者检测到，并可能导致账号风险。启用功能前请确认其作用。作者不对使用后果承担责任。
-
-## 许可证
-
-见 [LICENSE](./LICENSE)。
+`npm run typecheck`、`npm run lint`、`npm test` 和 `npm run build`
+检查并构建 `src/` 中的上游重写，输出 `dist/`，与 Relay 的扩展目录分开。
+见 [ARCHITECTURE.md](ARCHITECTURE.md)、[MODULES.md](MODULES.md) 和
+[上游发布页](https://github.com/SaltApocalypse/cor3-helper/releases)。
