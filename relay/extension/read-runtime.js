@@ -71,7 +71,15 @@
     op.later(()=>op.packet('expeditions','get.config',{marketId:spec.marketId}),500);
    });return true;
   }
-  return Object.freeze({market,mercenaries,cancelAll(){for(const op of [...runs.values()])op.finish({status:'cancelled',code:'READ_CANCELLED'});},active:()=>runs.size});
+  function droneOptions(callback){
+   const op=begin('drone:options',callback);if(!op)return true;
+   op.on(d=>d.action==='get.options'&&(d.type==='COR3_WS_DRONE_OPTIONS'||d.type==='COR3_WS_DRONE_ERROR'),d=>{
+    op.finish(d.type==='COR3_WS_DRONE_OPTIONS'?{status:'ok'}:{status:'partial',code:'DRONE_OPTIONS_FAILED'});
+   });
+   op.later(()=>op.finish({status:'partial',code:'DRONE_OPTIONS_TIMEOUT'}),15000);
+   return op.packet('drone-missions','get.options',{});
+  }
+  return Object.freeze({market,mercenaries,droneOptions,cancelAll(){for(const op of [...runs.values()])op.finish({status:'cancelled',code:'READ_CANCELLED'});},active:()=>runs.size});
  }
  root.Cor3ReadRuntimeFactory=Object.freeze({create});
 })(globalThis);

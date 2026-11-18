@@ -7,14 +7,14 @@ const flush=async()=>{for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r))
 function fixture(){
  let allowed=false,doc='first-document',listener=null;const data={},requests=[],messages=[],logs=[];
  const w={__cor3MasterGate:{onReady(f){this.ready=f}},postMessage(m){messages.push(m);if(listener)queueMicrotask(()=>listener({origin:'https://cor3.gg',data:m}));}};
- const c=vm.createContext({window:w,location:{origin:'https://cor3.gg'},cor3AutomationAllowed:()=>allowed,
-  Cor3CenterIdentity:{snapshot:()=>({documentId:doc})},
-  Cor3CenterStore:{async get(){return {...data}},async set(v){Object.assign(data,v)}},
+ const c=vm.createContext({AbortSignal,window:w,location:{origin:'https://cor3.gg'},cor3AutomationAllowed:()=>allowed,
+  networkScope:()=>({accountId:'FREEL_FF000001-0001',documentId:doc}),Cor3CenterIdentity:{snapshot:()=>({accountId:'FREEL_FF000001-0001',documentId:doc})},
+  Cor3CenterStore:{async get(){return {...data}},async set(v){Object.assign(data,v)},async remove(k){delete data[k]}},
   postDailyHackDiag:(step,message)=>logs.push({step,message}),
   fetch:async(url,opts)=>{requests.push({url,authorized:typeof opts.headers.Authorization==='string'});return{ok:true,json:async()=>({hasClaimedToday:true,currentStreak:2})}},
   trackedSockets:[],OrigWebSocket:{OPEN:1},Date,Error,Promise
  });
- vm.runInContext(session,c);vm.runInContext('function receive(event){'+tokenHandler+'}',c);
+ vm.runInContext(content.slice(content.indexOf('  let dailySession'),content.indexOf('  const runtimeLog=')),c);vm.runInContext(session,c);vm.runInContext('function receive(event){'+tokenHandler+'}',c);
  const start=main.indexOf('  window.__cor3MasterGate.onReady(() => {');const end=main.indexOf('  // src/content-early/index.js',start);vm.runInContext(main.slice(start,end),c);
  return{c,w,data,logs,requests,messages,listen:()=>listener=c.receive,allow:()=>allowed=true,deny:()=>allowed=false,changeDoc:()=>doc='next-document'};
 }
@@ -39,4 +39,31 @@ test('same session replay refreshes missing data once per document instead of on
  const f=fixture();f.listen();f.allow();vm.runInContext('setCapturedBearerToken("Bearer synthetic-fixture-only")',f.c);
  f.w.__cor3MasterGate.ready();await flush();f.w.__cor3MasterGate.ready();await flush();assert.equal(f.requests.length,1);
  f.changeDoc();f.w.__cor3MasterGate.ready();await flush();assert.equal(f.requests.length,2);
+});
+
+test('a burst of session notifications shares one Daily read and replaces old credentials with a page-only session',async()=>{
+ const f=fixture();f.data.bearerToken='Bearer synthetic-old';f.allow();f.listen();
+ for(let i=0;i<12;i++)f.c.receive({origin:'https://cor3.gg',data:{type:'COR3_BEARER_TOKEN',token:'Bearer synthetic-current'}});
+ await flush();assert.equal(f.requests.length,1);assert.equal(f.data.bearerToken,undefined);
+ assert.ok(!JSON.stringify(f.data).includes('Bearer'));assert.equal(f.logs.filter(x=>x.step==='session.ready').length,1);
+ f.changeDoc();let token;f.c.withDailyToken(value=>token=value);assert.equal(token,null);
+});
+test('a late Daily response from a replaced session cannot overwrite the new one',async()=>{
+ const f=fixture();f.allow();let release;
+ f.c.fetch=(_url,options)=>options.headers.Authorization.endsWith('old')?new Promise(resolve=>release=resolve):
+  Promise.resolve({ok:true,json:async()=>({hasClaimedToday:true,currentStreak:9})});
+ const notify=label=>f.c.receive({origin:'https://cor3.gg',data:{type:'COR3_BEARER_TOKEN',token:'Bearer synthetic-'+label}});
+ notify('old');await flush();notify('new');await flush();
+ release({ok:true,json:async()=>({hasClaimedToday:false,currentStreak:1})});await flush();
+ assert.equal(f.data.dailyOpsData.currentStreak,9);
+});
+
+test('a failed Daily read observes its retry deadline; the next admitted notification can recover',async()=>{
+ const f=fixture();f.allow();let clock=0,reads=0;
+ f.c.performance={now:()=>clock};
+ f.c.AbortSignal={timeout:ms=>{assert.equal(ms,15000);return AbortSignal.abort();}};
+ f.c.fetch=async(_url,options)=>{reads++;assert.ok(options.signal.aborted);if(reads===1)throw Error('timeout');return {ok:true,json:async()=>({hasClaimedToday:false})};};
+ const notify=()=>f.c.receive({origin:'https://cor3.gg',data:{type:'COR3_BEARER_TOKEN',token:'Bearer synthetic-current'}});
+ notify();await flush();clock=59999;notify();await flush();assert.equal(reads,1);assert.equal(f.data.dailyOpsData,undefined);
+ clock=60000;notify();await flush();assert.equal(reads,2);assert.equal(f.data.dailyOpsData.hasClaimedToday,false);
 });

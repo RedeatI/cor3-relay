@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "COR3 Relay",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "COR3 Relay — browser-scoped COR3 automation, market scheduling, expeditions and diagnostics. Based on COR3 Helper.",
   "permissions": [
     "storage",
@@ -36,6 +36,7 @@
         "msgpack-codec.js",
         "full-effect-projection.js",
         "loadout-algorithms.js",
+        "loadout-plan-cache.js",
         "read-runtime.js",
         "expedition-cost.js",
         "content-early.js"
@@ -49,6 +50,7 @@
         "https://os.cor3.gg/*"
       ],
       "js": [
+        "ui-language.js",
         "solver-page-document.js",
         "center-identity.js",
         "center-store.js",
@@ -67,6 +69,7 @@
         "network-coordinator.js",
         "job-batch.js",
         "auto-market-jobs.js",
+        "loadout-details.js",
         "inpage-controls-core.js",
         "market-refresh-clock.js",
         "content.js",
@@ -131,7 +134,7 @@
       ]
     }
   ],
-  "version_name": "2.1.0-relay-chrome",
+  "version_name": "2.2.0-relay-chrome",
   "side_panel": {
     "default_path": "popup.html"
   }

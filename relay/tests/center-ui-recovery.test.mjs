@@ -30,6 +30,13 @@ test('after recovery pins a binding, a replacement document permanently rejects 
 test('closing during an awaited binding proof prevents its late result from issuing a master command',async()=>{
  const f=fixture();await f.ui.ready;let release;const wait=new Promise(r=>release=r),original=f.api.runtime.sendMessage;f.api.runtime.sendMessage=async m=>{if(m.type==='centerResolve')await wait;return original(m);};const rejected=assert.rejects(f.ui.master(false),/CENTER_UI_CLOSED/);await flush();f.events.pagehide();release();await rejected;assert.ok(!f.calls.some(m=>m.action));
 });
+test('a lost proof can time out without invalidating a still-current pinned popup',async()=>{
+ const f=fixture();await f.ui.ready;const original=f.api.runtime.sendMessage;let finish;
+ f.api.runtime.sendMessage=m=>m.type==='centerResolve'?new Promise(r=>finish=r):original(m);
+ const failed=assert.rejects(f.ui.binding(),/CENTER_PROBE_TIMEOUT/);await f.next();await failed;
+ f.api.runtime.sendMessage=original;assert.equal((await f.ui.binding()).tabId,4);
+ finish({ok:false});await flush();assert.equal((await f.ui.binding()).tabId,4);
+});
 test('unawaited cached-read errors are observed without turning a failed read into successful empty data',async()=>{
  const popup=readFileSync(new URL('../extension/popup.js',import.meta.url),'utf8'),start=popup.indexOf('  function observeCenterRead('),end=popup.indexOf('  // src/popup/i18n.js',start),warnings=[];const c={console:{warn:x=>warnings.push(x)}};vm.runInNewContext(popup.slice(start,end),c);const rejected=Promise.reject(Error('CENTER_IDENTITY_SELECTOR_MISSING'));assert.equal(c.observeCenterRead(rejected),rejected);await assert.rejects(rejected,/SELECTOR_MISSING/);await flush();assert.equal(warnings.length,1);assert.ok(popup.includes('observeCenterRead(loadDrone());'));assert.ok(popup.includes('observeCenterRead(loadExpeditions());'));assert.ok(popup.includes('observeCenterRead(loadLoadout());'));
 });

@@ -52,10 +52,14 @@ jobs:
       - name: Test Chrome and Edge packages
         run: npm run relay:test
 
+      - name: Read Relay version
+        id: relay
+        run: node -p "'version=' + require('./relay/package.json').version" >> "$GITHUB_OUTPUT"
+
       - name: Upload Chrome and Edge packages
         uses: actions/upload-artifact@v4
         with:
-          name: COR3-Relay-2.1.0-Chrome-Edge
+          name: COR3-Relay-${{ steps.relay.outputs.version }}-Chrome-Edge
           path: |
             build/relay/Chrome/extension/
             build/relay/Chrome/SHA256.json

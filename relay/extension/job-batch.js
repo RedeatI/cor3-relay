@@ -16,10 +16,11 @@
    if(documentId&&(!proof||proof.documentId!==documentId||proof.status!=='ok'||proof.at<after||proof.at>now+1000))continue;freshMarkets.push(marketKey);
    for(const [rows,taken]of [[md.recentJobs||[],true],[md.jobs||[],false]])for(const row of rows){
     const name=row.name||row.type,id=row.id;
-    if(!id||seen.has(id)||done.has(id)||!allowed.has(name)||row.isCompleted||row.isExpired||(taken&&row.status!=='TAKEN')||locks.get(id)>now)continue;
+    const claimOnly=taken&&row.status==='TAKEN'&&row.canComplete===true;
+    if(!id||seen.has(id)||(!claimOnly&&done.has(id))||!allowed.has(name)||row.isCompleted||row.isExpired||(taken&&row.status!=='TAKEN')||(!claimOnly&&locks.get(id)>now))continue;
     const expires=new Date(row.expiresAt||row.deadline).getTime();if(Number.isFinite(expires)&&expires<=now)continue;
     const serverless=name==='File Decryption',server=serverless?null:row.relatedServers?.[0];
-    if(server?.serverName==='D4RK RM7CE'&&['Log Deletion','Log Download'].includes(name))continue;
+    if(!claimOnly&&server?.serverName==='D4RK RM7CE'&&['Log Deletion','Log Download'].includes(name))continue;
     seen.add(id);jobs.push({jobId:id,name,type:name,marketId:m.id,marketKey,serverId:serverless?null:server?.id||row.serverId||row.conditions?.serverConfigId||null,serverName:serverless?'None':server?.serverName||row.serverName||'None',
      rewardCredits:Number(row.rewardCredits)||0,rewardReputation:Number(row.rewardReputation)||0,deposit:Number(row.deposit)||0,
      conditions:Array.isArray(row.conditions)?row.conditions:row.conditions?.items||[],...(row.fileInfo?{fileInfo:row.fileInfo}:{}),alreadyTaken:taken,canComplete:taken&&row.canComplete===true,status:'pending'});

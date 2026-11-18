@@ -1,6 +1,56 @@
 (() => {
   function cor3AutomationAllowed() { return !!globalThis.Cor3Automation && Cor3Automation.allowed(); }
   function networkScope() { const id=globalThis.Cor3CenterIdentity?.snapshot(); return id ? {accountId:id.accountId,documentId:id.documentId}:null; }
+  let dailySession = null;
+  function dailyReadOptions(token) {
+    return {headers:{Authorization:token}, signal:AbortSignal.timeout(15000)};
+  }
+  const dailyRetryClock = () => globalThis.performance?.now() ?? Date.now();
+  function currentDailySession(session) {
+    const scope = networkScope();
+    return !!session && session === dailySession && cor3AutomationAllowed() && !!scope &&
+      session.accountId === scope.accountId && session.documentId === scope.documentId;
+  }
+  function withDailyToken(callback) {
+    const session = dailySession;
+    const valid = () => currentDailySession(session) && session.ready;
+    if (!valid()) { callback(null,valid); return; }
+    Cor3CenterStore.get("sessionAuthDocumentId", result =>
+      callback(valid() && result.sessionAuthDocumentId === session.documentId ? session.token : null, valid));
+  }
+  async function receiveDailySession(identity, token) {
+    let session = dailySession;
+    if (!currentDailySession(session) || session.token !== token) {
+      session = {accountId:identity.accountId, documentId:identity.documentId, token, ready:false, pending:false, loaded:false, retryAfter:0};
+      dailySession = session;
+    }
+    if (session.pending || session.loaded || dailyRetryClock() < session.retryAfter) return;
+    session.pending = true;
+    try {
+      if (!session.ready) {
+        await Cor3CenterStore.get("sessionAuthDocumentId");
+        if (!currentDailySession(session)) return;
+        await Cor3CenterStore.remove("bearerToken");
+        if (!currentDailySession(session)) return;
+        await Cor3CenterStore.set({sessionAuthDocumentId:identity.documentId, sessionAuthReadyAt:Date.now()});
+        if (!currentDailySession(session)) return;
+        session.ready = true;
+        postDailyHackDiag("session.ready", "Current page session synchronized");
+      }
+      const response = await fetch("https://svc-corie.cor3.gg/api/user-daily-claim", dailyReadOptions(token));
+      if (!response.ok) throw Error("DAILY_STATE_HTTP_" + response.status);
+      const data = await response.json();
+      if (!currentDailySession(session)) return;
+      if (typeof data?.hasClaimedToday !== "boolean") throw Error("DAILY_STATE_INVALID");
+      await Cor3CenterStore.set({dailyOpsData:data, dailyOpsUpdatedAt:Date.now(), dailyOpsError:null});
+      session.loaded = true;
+    } catch {
+      if (currentDailySession(session)) {
+        session.retryAfter = dailyRetryClock() + 60000;
+        postDailyHackDiag("session.retry", "Session handoff or daily state read did not complete", null, "warn");
+      }
+    } finally { session.pending = false; }
+  }
   const runtimeLog=globalThis.Cor3RunLog?.create({scope:networkScope,sink:payload=>Cor3CenterStore.set({automationRunLogs:payload})});
   globalThis.Cor3RuntimeLog=runtimeLog;
   function timedActivityRunning(){
@@ -1191,6 +1241,7 @@
     return keys.some((k) => m.indexOf(k) !== -1);
   }
   var _droneOptionsRefreshTimer = null;
+  var lastDroneOptionsRead = null;
   function scheduleDroneOptionsRefresh(delayMs) {
     if (!cor3AutomationAllowed()) return;
     if (_droneOptionsRefreshTimer) clearTimeout(_droneOptionsRefreshTimer);
@@ -1349,6 +1400,7 @@
       handleDroneRateLimited(action, msg);
       return;
     }
+    if (action === "get.options") return; // The read loader and periodic check own retries.
     if (isDroneBusyError(msg)) {
       console.log("[COR3 Helper] Auto-drone: transient busy error \u2014 will retry");
       Cor3CenterStore.set({ droneWarning: "Drone " + action + " deferred (" + msg + ") \u2014 retrying\u2026" });
@@ -1371,6 +1423,8 @@
     const now = Date.now();
     const type = event.data && event.data.type;
     if (type === "COR3_WS_DRONE_OPTIONS") {
+      const scope = networkScope();
+      if (scope && event.origin === location.origin) lastDroneOptionsRead = { ...scope, at: now };
       _droneRateLimitRetries = 0;
       _clearDronePending();
       expeditionLog("drone-options");
@@ -1414,6 +1468,8 @@
     } else if (type === "COR3_WS_DRONE_EVENT") {
       checkAutoDroneDecide(event.data.data);
     } else if (type === "COR3_WS_DRONE_REPAIR") {
+      _clearDronePending();
+      scheduleDroneOptionsRefresh(1500);
       console.log("[COR3 Helper] Auto-drone: repair started");
     } else if (type === "COR3_WS_DRONE_ARCHIVED") {
       const arcData = event.data.data || {};
@@ -1470,14 +1526,23 @@
       sendResponse({ success: true });
     }
   });
-  setInterval(() => {
-    if (!isContextValid()) return;
+  function pollDroneOptions() {
+    if (!isContextValid() || !cor3AutomationAllowed()) return;
+    const scope = networkScope();
+    if (!scope) return;
+    const needsOptions = () => {
+      const age = Date.now() - (lastDroneOptionsRead?.at || 0);
+      return lastDroneOptionsRead?.accountId !== scope.accountId || lastDroneOptionsRead?.documentId !== scope.documentId || age < 0 || age >= 60000;
+    };
+    if (!needsOptions()) return;
     Cor3CenterStore.get("autoDrone", (settings) => {
       const cfg = settings.autoDrone || {};
-      if (!cfg.enabled || cfg.paused) return;
+      const current = networkScope();
+      if (!cfg.enabled || cfg.paused || !cor3AutomationAllowed() || current?.accountId !== scope.accountId || current?.documentId !== scope.documentId || !needsOptions()) return;
       window.postMessage({ type: "COR3_REQUEST_DRONE_OPTIONS" }, "*");
     });
-  }, 6e4);
+  }
+  setInterval(pollDroneOptions, 6e4);
   Cor3CenterStore.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes.autoDrone) return;
     const newVal = changes.autoDrone.newValue;
@@ -2544,9 +2609,7 @@
     });
   }
   function fetchDailyClaimState(token, callback) {
-    fetch("https://svc-corie.cor3.gg/api/user-daily-claim", {
-      headers: { "Authorization": token }
-    }).then((r) => {if(!r.ok)throw Error("DAILY_HTTP_"+r.status);return r.json();}).then((data) => {if(!data||typeof data.hasClaimedToday!=="boolean")throw Error("DAILY_STATE_INVALID");callback(null,data);}).catch((err) => callback(err, null));
+    fetch("https://svc-corie.cor3.gg/api/user-daily-claim", dailyReadOptions(token)).then((r) => {if(!r.ok)throw Error("DAILY_HTTP_"+r.status);return r.json();}).then((data) => {if(!data||typeof data.hasClaimedToday!=="boolean")throw Error("DAILY_STATE_INVALID");callback(null,data);}).catch((err) => callback(err, null));
   }
   function startDailyHackAutomation(reason,force) {
     const epoch=dailyEpoch();if(!dailyValid(epoch)||!cor3AutomationAllowed())return;
@@ -2600,9 +2663,8 @@
           reason,
           attempt: _dailyHackAutoStartRetries
         });
-        Cor3CenterStore.get("bearerToken", (result) => {
-      if (!dailyValid(epoch)) return;
-          const token = result.bearerToken;
+        withDailyToken((token, sessionValid) => {
+          if (!dailyValid(epoch)) return;
           if (!token) {
             _dailyHackStartInProgress = false;
             postDailyHackDiag("auto.token", "No bearer token yet", {
@@ -2623,7 +2685,8 @@
             tokenLength: token.length
           });
           fetchDailyClaimState(token, (err, data) => {
-      if (!dailyValid(epoch)) return;
+            if (!dailyValid(epoch)) return;
+            if (!sessionValid()) err = Error("DAILY_SESSION_CHANGED");
             if (err) { _dailyHackStartInProgress = false; }
             if (err) {
               postDailyHackDiag("auto.api", "Daily claim API failed \u2014 will retry later", {
@@ -2696,7 +2759,7 @@
         _dailyHackStartInProgress = false;
         return;
       }
-      Cor3CenterStore.get("bearerToken", ({ bearerToken }) => {
+      withDailyToken((bearerToken, sessionValid) => {
       if (!dailyValid(epoch)) return;
         if (!bearerToken) {
           scheduleDailyHackCheck(Date.now() + DAILY_HACK_FALLBACK_DELAY_MS, "success_no_token");
@@ -2704,7 +2767,8 @@
           return;
         }
         fetchDailyClaimState(bearerToken, (err, data) => {
-      if (!dailyValid(epoch)) return;
+          if (!dailyValid(epoch)) return;
+          if (!sessionValid()) err = Error("DAILY_SESSION_CHANGED");
           if (err) {
             scheduleDailyHackCheck(Date.now() + DAILY_HACK_FALLBACK_DELAY_MS, "success_api_failed");
             _dailyHackStartInProgress = false;
@@ -2760,12 +2824,11 @@
     releaseDailyHackLock();
   });
   function fetchDailyRewards(token) {
+    const session = dailySession;
     const epoch = dailyEpoch();
     if (!dailyValid(epoch)) return;
-    fetch("https://svc-corie.cor3.gg/api/user-daily-claim/rewards", {
-      headers: { "Authorization": token }
-    }).then((r) => r.ok ? r.json() : null).then((data) => {
-      if (!dailyValid(epoch)) return;
+    fetch("https://svc-corie.cor3.gg/api/user-daily-claim/rewards", dailyReadOptions(token)).then((r) => r.ok ? r.json() : null).then((data) => {
+      if (!dailyValid(epoch) || !currentDailySession(session)) return;
       if (data && Array.isArray(data)) {
         Cor3CenterStore.set({ dailyRewardsData: data });
       }
@@ -2959,28 +3022,27 @@
         window.postMessage({ type: "COR3_OPEN_CONTAINER", expeditionId: request.expeditionId }, "*");
         sendResponse({ success: true });
       } else if (request.action === "fetchDailyOps") {
-        Cor3CenterStore.get("bearerToken", (result2) => {
-          const token = result2.bearerToken;
+        withDailyToken((token, sessionValid) => {
           if (!token) {
             sendResponse({ error: "no token" });
             return;
           }
-          fetch("https://svc-corie.cor3.gg/api/user-daily-claim", {
-            headers: { "Authorization": token }
-          }).then((r) => {
+          fetch("https://svc-corie.cor3.gg/api/user-daily-claim", dailyReadOptions(token)).then((r) => {
             if (r.ok) return r.json();
             if (r.status === 400 || r.status === 401 || r.status === 403) return r.json().then((d) => {
               throw new Error(d.message || "token_expired");
             }).catch(() => {
               throw new Error("token_expired");
             });
-            return null;
+            throw Error("DAILY_HTTP_" + r.status);
           }).then((data) => {
-            if (data) {
-              Cor3CenterStore.set({ dailyOpsData: data, dailyOpsUpdatedAt: Date.now() });
+            if (!sessionValid()) { sendResponse({error:"PAGE_CHANGED"}); return; }
+            if (typeof data?.hasClaimedToday !== "boolean") throw Error("DAILY_STATE_INVALID");
+            return Cor3CenterStore.set({dailyOpsData:data, dailyOpsUpdatedAt:Date.now(), dailyOpsError:null}).then(() => {
+              if (!sessionValid()) { sendResponse({error:"PAGE_CHANGED"}); return; }
               fetchDailyRewards(token);
-            }
-            sendResponse({ data });
+              sendResponse({data});
+            });
           }).catch((e) => {
             cor3LogError("content.js", e, { action: "fetchDailyOps" });
             sendResponse({ error: e.message || "fetch failed" });
@@ -3236,8 +3298,14 @@
         }
         try{const pending=receive(request,undefined,finish,localPermit);if(pending!==true&&!complete)finish({success:false});}catch(e){clearTimeout(timer);complete=true;reject(e);}
       });
+      const admit=documentId=>{
+        let timer;
+        const deadline=new Promise(resolve=>{timer=setTimeout(()=>resolve({allowed:false,snapshot:null}),8000);});
+        const request=Promise.resolve().then(()=>chrome.runtime.sendMessage({type:'centerAdmission',documentId}));
+        return Promise.race([request,deadline]).finally(()=>clearTimeout(timer));
+      };
       globalThis.Cor3InPageControls=Cor3InPageControlsFactory.create({
-        admit:documentId=>chrome.runtime.sendMessage({type:'centerAdmission',documentId}),
+        admit,
         dispatch,enqueue:(type,run)=>network().enqueue(type,run,45),queue:()=>network().snapshot(),
         version:chrome.runtime.getManifest().version
       });
@@ -3268,9 +3336,7 @@
   }
   function fetchDailyRewards2(token, stillValid = () => true) {
     if (!stillValid()) return;
-    fetch("https://svc-corie.cor3.gg/api/user-daily-claim/rewards", {
-      headers: { "Authorization": token }
-    }).then((r) => r.ok ? r.json() : null).then((data) => {
+    fetch("https://svc-corie.cor3.gg/api/user-daily-claim/rewards", dailyReadOptions(token)).then((r) => r.ok ? r.json() : null).then((data) => {
       if (!stillValid()) return;
       if (data && Array.isArray(data)) {
         Cor3CenterStore.set({ dailyRewardsData: data });
@@ -3368,24 +3434,7 @@
         const token = event.data.token;
         if (!cor3AutomationAllowed() || !identity || typeof token !== "string" ||
             !token.startsWith("Bearer ") || token.length > 16384) return;
-        const current = () => cor3AutomationAllowed() &&
-          globalThis.Cor3CenterIdentity?.snapshot()?.documentId === identity.documentId;
-        Cor3CenterStore.get(["bearerToken", "sessionAuthDocumentId"]).then(async prev => {
-          if (!current()) return;
-          const isNew = prev.bearerToken !== token || prev.sessionAuthDocumentId !== identity.documentId;
-          await Cor3CenterStore.set({ bearerToken: token, sessionAuthDocumentId: identity.documentId, sessionAuthReadyAt: Date.now() });
-          if (!current()) return;
-          postDailyHackDiag("session.ready", "Current page session synchronized");
-          if (isNew) {
-            const response = await fetch("https://svc-corie.cor3.gg/api/user-daily-claim", { headers: { Authorization: token } });
-            if (!current()) return;
-            if (!response.ok) throw Error("DAILY_STATE_HTTP_" + response.status);
-            const data = await response.json();
-            if (current() && data) await Cor3CenterStore.set({ dailyOpsData: data, dailyOpsUpdatedAt: Date.now(), dailyOpsError: null });
-          }
-        }).catch(() => {
-          if (current()) postDailyHackDiag("session.retry", "Session handoff or daily state read did not complete", null, "warn");
-        });
+        void receiveDailySession(identity, token);
       }
       if (event.origin === location.origin && event.data?.type === "COR3_SESSION_STATUS" &&
           event.data.available === false && cor3AutomationAllowed()) {
@@ -3795,16 +3844,14 @@
         const fromSolver = event.data.type === "COR3_DAILY_HACK_REFRESH";
         const messageTicket = event.data.lifecycleTicket;
         const messageEpoch = dailyEpoch();
-        const stillValid = () => !fromSolver || (dailyValid(messageEpoch) && validDailyLifecycleMessage({lifecycleTicket:messageTicket}));
-        if (!stillValid()) return;
+        const lifecycleValid = () => !fromSolver || (dailyValid(messageEpoch) && validDailyLifecycleMessage({lifecycleTicket:messageTicket}));
+        if (!lifecycleValid()) return;
         console.log("[COR3 Helper] Requesting daily ops data");
-        Cor3CenterStore.get("bearerToken", (result) => {
+        withDailyToken((token, sessionValid) => {
+          const stillValid = () => lifecycleValid() && sessionValid();
           if (!stillValid()) return;
-          const token = result.bearerToken;
           if (!token) return;
-          fetch("https://svc-corie.cor3.gg/api/user-daily-claim", {
-            headers: { "Authorization": token }
-          }).then((r) => {
+          fetch("https://svc-corie.cor3.gg/api/user-daily-claim", dailyReadOptions(token)).then((r) => {
             if (!stillValid()) return null;
             if (r.ok) return r.json();
             if (r.status === 400 || r.status === 401 || r.status === 403) {
@@ -3814,7 +3861,7 @@
             return null;
           }).then((data) => {
             if (!stillValid()) return;
-            if (data) {
+            if (typeof data?.hasClaimedToday === "boolean") {
               Cor3CenterStore.set({ dailyOpsData: data, dailyOpsUpdatedAt: Date.now(), dailyOpsError: null });
               fetchDailyRewards2(token, stillValid);
             }
@@ -3977,10 +4024,11 @@
         Cor3CenterStore.set({ _allMarketsRefreshed: Date.now() });
       }
       if (event.data && event.data.type === "COR3_TOKEN_EXPIRED") {
+        dailySession = null;
         setMarketRefreshInProgress(false);
         Promise.resolve().then(() => (init_auto_update_markets(), auto_update_markets_exports)).then((m) => m.setSeqRefreshRunning(false));
         setInitialFetchDone(false);
-        Cor3CenterStore.remove("initialFetchDoneAt");
+        Cor3CenterStore.remove(["initialFetchDoneAt", "sessionAuthDocumentId", "sessionAuthReadyAt"]);
         if (autoSendInProgress) {
           console.log("[COR3 Helper] Token expired \u2014 aborting in-progress auto-send");
           setAutoSendInProgress(false);
@@ -4134,6 +4182,7 @@
     }
   });
   Cor3Automation.onStop(() => {
+    dailySession = null;
     globalThis.Cor3InPageControls?.stopAutoMarket();
     network().cancel();dailyNetworkTask=null;
     observedCredits = undefined;
@@ -4153,6 +4202,7 @@
     autoDroneInProgress = false;
     if (_droneOptionsRefreshTimer) clearTimeout(_droneOptionsRefreshTimer);
     _droneOptionsRefreshTimer = null;
+    lastDroneOptionsRead = null;
     if (_active && _active.timer) clearTimeout(_active.timer);
     _active = null;
     _queue = [];

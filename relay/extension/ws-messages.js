@@ -10,6 +10,7 @@ const COR3_WS_MAX_ENTRIES = 30000;
 const COR3_WS_LOGS_MAX_ENTRIES = 30000;
 
 let _wsDbInstance = null;
+let _wsOpening = null;
 let _wsLastPurge = 0;
 
 function _wsInvalidateDb() {
@@ -29,7 +30,8 @@ function _wsOpenDb() {
         }
     }
     if (_wsDbInstance) return Promise.resolve(_wsDbInstance);
-    return new Promise((resolve, reject) => {
+    if (_wsOpening) return _wsOpening;
+    _wsOpening = new Promise((resolve, reject) => {
         const req = indexedDB.open(COR3_WS_DB_NAME, COR3_WS_DB_VERSION);
         req.onupgradeneeded = (e) => {
             const db = e.target.result;
@@ -45,10 +47,11 @@ function _wsOpenDb() {
             }
         };
         req.onsuccess = (e) => {
-            _wsDbInstance = e.target.result;
-            _wsDbInstance.onclose = () => { _wsInvalidateDb(); };
-            _wsDbInstance.onerror = () => { _wsInvalidateDb(); };
-            _wsDbInstance.onversionchange = () => { _wsDbInstance.close(); _wsInvalidateDb(); };
+            const db = e.target.result;
+            _wsDbInstance = db;
+            const disconnected = () => { if (_wsDbInstance === db) _wsInvalidateDb(); };
+            db.onclose = disconnected;
+            db.onversionchange = () => { db.close(); disconnected(); };
             console.log('[COR3 WS-Log] IndexedDB opened successfully');
             resolve(_wsDbInstance);
         };
@@ -56,7 +59,8 @@ function _wsOpenDb() {
             console.log('[COR3 WS-Log] IndexedDB open failed:', e.target.error);
             reject(e.target.error);
         };
-    });
+    }).finally(() => { _wsOpening = null; });
+    return _wsOpening;
 }
 
 async function _wsPurgeOld() {

@@ -2,15 +2,46 @@ import test from 'node:test';import assert from 'node:assert/strict';import vm f
 const source=readFileSync(new URL('../extension/center-binding.js',import.meta.url),'utf8');
 const tick=()=>new Promise(r=>setImmediate(r));
 function event(){const listeners=new Set();return {addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f),emit(...a){for(const f of listeners)f(...a)},listeners}}
-function fixture(persistAccount=false){let n=0,delay=null;const context={URL,setTimeout,clearTimeout};vm.runInNewContext(source,context);vm.runInNewContext(readFileSync(new URL('../extension/center-migration.js',import.meta.url),'utf8'),context);const data={helperMode:true},writes=[];let writeHook=null;const storage={async get(keys){const list=typeof keys==='string'?[keys]:keys;return Object.fromEntries(list.filter(k=>Object.hasOwn(data,k)).map(k=>[k,data[k]]))},async set(values){writes.push({...values});Object.assign(data,values);if(writeHook)await writeHook(values)}};const migration=context.Cor3CenterMigrationFactory.create({storage,accounts:["FREEL_FF000005-0005", "FREEL_FF000006-0006", "FREEL_FF000003-0003", "FREEL_FF000008-0008", "FREEL_FF000007-0007", "FREEL_FF000002-0002"]});const records=new Map([[1,{id:1,windowId:10,url:'https://cor3.gg/',status:'complete',account:'FREEL_FF000008-0008',documentId:'11'.repeat(16)}],[2,{id:2,windowId:20,url:'https://cor3.gg/',status:'complete',account:'FREEL_FF000004-0004',documentId:'22'.repeat(16)}]]);const calls=[],timers=new Map();let timer=0;
+function fixture(persistAccount=false,recovery=undefined){let n=0,delay=null;const context={URL,setTimeout,clearTimeout,Cor3ExpeditionSaveRecovery:recovery};vm.runInNewContext(source,context);vm.runInNewContext(readFileSync(new URL('../extension/center-migration.js',import.meta.url),'utf8'),context);const data={helperMode:true},writes=[];let writeHook=null;const storage={async get(keys){const list=typeof keys==='string'?[keys]:keys;return Object.fromEntries(list.filter(k=>Object.hasOwn(data,k)).map(k=>[k,data[k]]))},async set(values){writes.push({...values});Object.assign(data,values);if(writeHook)await writeHook(values)}};const migration=context.Cor3CenterMigrationFactory.create({storage,accounts:["FREEL_FF000005-0005", "FREEL_FF000006-0006", "FREEL_FF000003-0003", "FREEL_FF000008-0008", "FREEL_FF000007-0007", "FREEL_FF000002-0002"]});const records=new Map([[1,{id:1,windowId:10,url:'https://cor3.gg/',status:'complete',account:'FREEL_FF000008-0008',documentId:'11'.repeat(16)}],[2,{id:2,windowId:20,url:'https://cor3.gg/',status:'complete',account:'FREEL_FF000004-0004',documentId:'22'.repeat(16)}]]);const calls=[],timers=new Map();let timer=0;
  const api={storage:{local:storage},runtime:{id:'fixture',getURL:p=>'moz-extension://fixture/'+p,onMessage:event()},windows:{get:async id=>({id,type:'normal'}),onRemoved:event()},tabs:{onActivated:event(),onUpdated:event(),onRemoved:event(),onCreated:event(),onAttached:event(),onDetached:event(),get:async id=>({...records.get(id)}),query:async q=>[...records.values()].filter(t=>t.windowId===q.windowId).map(t=>({...t})),sendMessage:async(id,m,options)=>{calls.push({id,m,options});if(m.type!=='cor3-center-probe')return {sent:true};const r=records.get(id);const reply=()=>api.runtime.onMessage.emit({type:'cor3-center-observation',nonce:m.nonce,account:r.account,documentId:r.documentId,url:r.url},{id:'fixture',tab:{id,windowId:r.windowId},frameId:0,url:r.url},()=>{});if(delay)delay(reply);else reply();}}};
  vm.runInNewContext(readFileSync(new URL('../extension/center-profile.js',import.meta.url),'utf8'),context);
  const profile=persistAccount?context.Cor3CenterProfileFactory.create(storage):undefined;
  const binding=context.Cor3CenterBindingFactory.create({api,migration,profile,nonce:()=> (++n).toString(16).padStart(32,'0'),setTimer:(f,ms)=>{timers.set(++timer,{f,ms});return timer},clearTimer:id=>timers.delete(id)});
  const popup={id:'fixture',url:api.runtime.getURL('popup.html')};
  const call=(m,s=popup)=>new Promise(resolve=>{let handled=false,responded=false;const respond=v=>{responded=true;resolve(v)};for(const f of api.runtime.onMessage.listeners){if(f(m,s,respond)===true)handled=true}if(!handled&&!responded)resolve(undefined)});
- const bind=(windowId=10)=>call({type:'cor3-center-auto-bind',windowId});return {api,binding,records,calls,timers,popup,call,bind,data,writes,F:context.Cor3CenterMigrationFactory,onWrite:f=>writeHook=f,delay:f=>delay=f};}
+ const bind=(windowId=10)=>call({type:'cor3-center-auto-bind',windowId});return {api,binding,records,calls,timers,popup,call,bind,data,writes,F:context.Cor3CenterMigrationFactory,onWrite:f=>writeHook=f,delay:f=>delay=f,loadStore(){api.storage.onChanged=event();Object.assign(context,{chrome:api,Cor3CenterBinding:binding});vm.runInNewContext(readFileSync(new URL('../extension/center-store.js',import.meta.url),'utf8'),context);}};}
 test('default background stays unbound and never selects a first tab',async()=>{const f=fixture();assert.equal(await f.binding.resolve(),null);assert.equal(f.calls.length,0);f.binding.close()});
+test('scoped store gets two fresh proofs and rejects foreign senders without probing',async()=>{
+ const f=fixture(true);await f.bind();f.loadStore();const tab=f.records.get(1);
+ const sender={id:'fixture',tab,frameId:0,url:tab.url};
+ const message={type:'cor3-center-store',op:'get',value:'autoDailyHackEnabled',documentId:tab.documentId};
+ f.calls.length=0;
+ const result=await f.call(message,sender);
+ assert.equal(result.value.autoDailyHackEnabled,true);
+ assert.equal(f.calls.filter(x=>x.m.type==='cor3-center-probe').length,2);
+ f.calls.length=0;
+ assert.equal((await f.call({...message,documentId:'99'.repeat(16)},sender)).ok,false);
+ assert.equal((await f.call(message,{...sender,tab:f.records.get(2)})).ok,false);
+ assert.equal(f.calls.length,0);f.binding.close();
+});
+test('account verification recovers expedition settings before the page is bound', async () => {
+ const account='FREEL_FF000008-0008', key=`center:${account}:autoSendMerc`;
+ let restoreCalls=0;
+ const f=fixture(true,{async restore(observed,check){
+  restoreCalls++;
+  assert.equal(observed,account);
+  assert.equal(f.data.cor3CenterBrowserAccount.accountId,account);
+  assert.equal(f.binding.snapshot(),null);
+  await check();
+  await f.api.storage.local.set({[key]:{enabled:false,maxMercCost:5000}});
+ }});
+ f.binding.onBound(()=>assert.deepEqual(f.data[key],{enabled:false,maxMercCost:5000}));
+ assert.equal((await f.bind()).ok,true);
+ assert.equal((await f.bind()).ok,true);
+ assert.equal(restoreCalls,1);
+ assert.deepEqual(f.data[key],{enabled:false,maxMercCost:5000});
+ f.binding.close();
+});
 test('first verified active game auto-binds and remembers only this browser account',async()=>{
  const f=fixture(true),tab=f.records.get(2);tab.active=true;
  const send=()=>f.call({type:'cor3-center-page-ready',documentId:tab.documentId},{id:'fixture',frameId:0,tab:{...tab},url:tab.url});
@@ -80,3 +111,24 @@ test('two failed transports still close admission and prompt only the former tab
 test('account/document changes never use the transport retry path',async()=>{const f=fixture();await f.bind();f.records.get(1).account='FREEL_FF00000C-000C';const before=f.calls.filter(x=>x.m.type==='cor3-center-probe').length;assert.equal(await f.binding.resolve(),null);assert.equal(f.calls.filter(x=>x.m.type==='cor3-center-probe').length,before+1);assert.equal(f.binding.snapshot(),null);f.binding.close();});
 
 test('market summary includes taken work and deduplicates its open row instead of reporting zero',async()=>{const f=fixture(true);const tab=f.records.get(1),prefix='center:'+tab.account+':';await f.bind();f.data[prefix+'marketData']={jobs:[{id:'a'},{id:'b',isCompleted:true}],recentJobs:[{id:'a',status:'TAKEN'},{id:'c',status:'TAKEN'},{id:'old',status:'FAILED'}]};const result=await f.call({type:'cor3CenterCacheSummary',documentId:tab.documentId},{id:'fixture',tab:{...tab},frameId:0,url:tab.url});assert.equal(result.ok,true);assert.equal(result.counts.marketData,2);f.binding.close();});
+
+test('status reads compact counts for modern caches and fetches only the legacy market rows',async()=>{
+ const f=fixture(true), tab=f.records.get(1), prefix='center:'+tab.account+':';
+ await f.bind();f.loadStore();
+ const sender={id:'fixture',tab:{...tab},frameId:0,url:tab.url};
+ const markets=['marketData','darkMarketData','soyuzMarketData','usolMarketData'];
+ const write=(op,value)=>f.call({type:'cor3-center-store',op,value,documentId:tab.documentId},sender);
+ const options={jobs:[{id:'a'},{id:'b',isCompleted:true}],recentJobs:[{id:'a',status:'TAKEN'}]};
+ await write('set',Object.fromEntries(markets.map(key=>[key,options])));
+ await write('update',{key:'darkMarketData',patch:{jobs:[{id:'new'}]}});
+ assert.equal(f.data[prefix+'darkMarketDataSummaryV1'].activeJobsCount,2);
+ const requested=[],get=f.api.storage.local.get;
+ f.api.storage.local.get=keys=>{requested.push(...[keys].flat());return get(keys);};
+ const read=()=>f.call({type:'cor3CenterCacheSummary',documentId:tab.documentId},sender);
+ const modern=await read();assert.equal(modern.counts.marketData,1);
+ assert.equal(modern.counts.darkMarketData,2);assert.ok(markets.every(key=>!requested.includes(prefix+key)));
+ delete f.data[prefix+'marketDataSummaryV1'].activeJobsCount;
+ requested.length=0;const legacy=await read();assert.equal(legacy.counts.marketData,1);
+ assert.deepEqual(markets.filter(key=>requested.includes(prefix+key)),['marketData']);
+ f.binding.close();
+});

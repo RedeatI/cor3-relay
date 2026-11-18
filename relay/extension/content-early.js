@@ -26,6 +26,7 @@
     if (available) window.postMessage({ type: "COR3_BEARER_TOKEN", token }, location.origin);
     return available;
   }
+  const expiredSockets = new WeakSet();
   var pendingRetryOps = [];
   var tokenExpiredFlag = false;
   function setTokenExpiredFlag(val) {
@@ -114,7 +115,7 @@
                     var connectPayload = JSON.parse(data.substring(2));
                     if (connectPayload.token && connectPayload.token.startsWith("Bearer ")) {
                       setCapturedBearerToken(connectPayload.token);
-                      window.postMessage({ type: "COR3_BEARER_TOKEN", token: connectPayload.token }, "*");
+                      window.postMessage({ type: "COR3_BEARER_TOKEN", token: connectPayload.token }, location.origin);
                     }
                   } catch (e) {
                   }
@@ -129,7 +130,7 @@
                         var cp = JSON.parse(str.substring(2));
                         if (cp.token && cp.token.startsWith("Bearer ")) {
                           setCapturedBearerToken(cp.token);
-                          window.postMessage({ type: "COR3_BEARER_TOKEN", token: cp.token }, "*");
+                          window.postMessage({ type: "COR3_BEARER_TOKEN", token: cp.token }, location.origin);
                         }
                       } catch (e) {
                       }
@@ -145,7 +146,7 @@
                         var cp = JSON.parse(str.substring(2));
                         if (cp.token && cp.token.startsWith("Bearer ")) {
                           setCapturedBearerToken(cp.token);
-                          window.postMessage({ type: "COR3_BEARER_TOKEN", token: cp.token }, "*");
+                          window.postMessage({ type: "COR3_BEARER_TOKEN", token: cp.token }, location.origin);
                         }
                       } catch (e) {
                       }
@@ -533,7 +534,7 @@
     XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
       if ((name === "Authorization" || name === "authorization") && value && value.startsWith("Bearer ") && (this.__cor3Url && (this.__cor3Url.includes("cor3") || this.__cor3Url.includes("corie")))) {
         setCapturedBearerToken(value);
-        window.postMessage({ type: "COR3_BEARER_TOKEN", token: value }, "*");
+        window.postMessage({ type: "COR3_BEARER_TOKEN", token: value }, location.origin);
       }
       return OrigXHRSetHeader.apply(this, arguments);
     };
@@ -563,9 +564,8 @@
     }
     if (!payload.data) return true;
     if (dmAction === "get.options") {
-      window.postMessage({ type: "COR3_WS_DRONE_OPTIONS", data: payload.data }, "*");
+      window.postMessage({ type: "COR3_WS_DRONE_OPTIONS", action: dmAction, data: payload.data }, "*");
     } else if (dmAction === "repair") {
-      window.postMessage({ type: "COR3_WS_DRONE_OPTIONS", data: payload.data }, "*");
       window.postMessage({ type: "COR3_WS_DRONE_REPAIR", data: payload.data }, "*");
     } else if (dmAction === "launch") {
       window.postMessage({ type: "COR3_WS_DRONE_MISSION", data: payload.data }, "*");
@@ -584,10 +584,7 @@
     return true;
   }
   window.__cor3RequestDroneOptions = function() {
-    console.log("[COR3 Helper] Requesting drone options");
-    var msg = '42["event",{"event":{"name":"drone-missions","action":"get.options"},"data":{}}]';
-    wsSend(msg);
-    return true;
+    return stableReads.droneOptions();
   };
   window.__cor3LaunchDrone = function(locationConfigId, missionConfigId) {
     console.log("[COR3 Helper] Launching drone mission:", locationConfigId, missionConfigId);
@@ -680,7 +677,10 @@
     } catch (_) { /* Proof absence never interrupts the original helper or implies success. */ }
     if (handleDroneMessage(eventName, payload)) return;
     if (eventName === "error" && payload && payload.message === "token-expired") {
-      console.log("[COR3 Helper] Token expired detected \u2014 closing sockets to force reconnect");
+      if (!socket || socket.__cor3IsMinigame || !trackedSockets.includes(socket) || expiredSockets.has(socket)) return;
+      expiredSockets.add(socket);
+      if (!cor3AutomationAllowed()) return;
+      setCapturedBearerToken(null);
       setTokenExpiredFlag(true);
       var newAbortId = bumpMarketRefreshAbortId();
       console.log("[COR3 Helper] Bumped market refresh abort ID to", newAbortId);
@@ -689,20 +689,7 @@
       queueRetryOp("stash");
       queueRetryOp("dailyOps");
       window.postMessage({ type: "COR3_TOKEN_EXPIRED" }, "*");
-      var socketsToClose = trackedSockets.slice();
-      for (var i = 0; i < socketsToClose.length; i++) {
-        try {
-          socketsToClose[i].close();
-        } catch (e) {
-        }
-      }
-      setTimeout(function() {
-        if (trackedSockets.length === 0) {
-          console.log("[COR3 Helper] No new WebSocket connected after token-expired close \u2014 game may need page refresh");
-        } else {
-          console.log("[COR3 Helper] WebSocket reconnected after token-expired");
-        }
-      }, 15e3);
+      if (socket.readyState === OrigWebSocket.OPEN) socket.close();
       return;
     }
     if (eventName === "specialists" && payload && payload.data) {

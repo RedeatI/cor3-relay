@@ -127,9 +127,11 @@ function decryptFlow(extra={}){
 }
 test('already decryptable files retain the current gear and run the solver',async()=>{const f=decryptFlow();assert.equal((await f.c.runDecryptFlow('file','file.eb52x',{})).credits,100);assert.ok(!f.actions.includes('equip'));assert.deepEqual(f.actions,['decrypt.file','solver']);});
 test('known decoded files complete without gear changes or opening a minigame',async()=>{const f=decryptFlow();await f.c.runDecryptFlow('file','file.eb52x',{},false);assert.deepEqual(f.actions,[]);});
-test('insufficient power is re-read after the plan and cannot masquerade as an already decoded file',async()=>{
- let calls=0;const f=decryptFlow({readDecryptAnalysis:async()=>{calls++;return {canDecrypt:false,decryptPower:0};}});await assert.rejects(f.c.runDecryptFlow('file','file.eb52x',{}),/POWER_INSUFFICIENT/);assert.equal(calls,2);assert.deepEqual(f.actions,['equip']);
+test('genuine positive insufficient power is re-read and refused after the verified plan',async()=>{
+ let calls=0;const f=decryptFlow({readDecryptAnalysis:async()=>{calls++;return {canDecrypt:false,decryptPower:45};}});await assert.rejects(f.c.runDecryptFlow('file','file.eb52x',{}),/POWER_INSUFFICIENT/);assert.equal(calls,2);assert.deepEqual(f.actions,['equip']);
 });
+test('zero or null power after a verified plan opens the exact file once and still waits for the solver',async()=>{for(const decryptPower of [0,null]){const f=decryptFlow({readDecryptAnalysis:async()=>({canDecrypt:false,decryptPower})});assert.equal((await f.c.runDecryptFlow('file','file.eb52x',{})).credits,100);assert.deepEqual(f.actions,['equip','decrypt.file','solver']);}});
+test('missing analysis and a failed loadout verification never use the zero-power fallback',async()=>{const missing=decryptFlow({readDecryptAnalysis:async()=>null});await assert.rejects(missing.c.runDecryptFlow('file','file.eb52x',{}),/ANALYSIS_UNAVAILABLE/);assert.deepEqual(missing.actions,['equip']);const failed=decryptFlow({readDecryptAnalysis:async()=>({canDecrypt:false,decryptPower:0}),ensureDecryptOnlyLoadout:async()=>{throw Error('LOADOUT_VERIFY_FAILED');}});await assert.rejects(failed.c.runDecryptFlow('file','file.eb52x',{}),/VERIFY_FAILED/);assert.equal(failed.actions.length,0);});
 test('decrypt flow cannot continue a previous generation even if a late analysis says ready',async()=>{
  let epoch=1;const f=decryptFlow({readDecryptAnalysis:async()=>{epoch++;return {canDecrypt:true};}});f.c.__cor3MasterGate.snapshot=()=>({generation:epoch});await assert.rejects(f.c.runDecryptFlow('file','file.eb52x',{}),/SCOPE_REVOKED/);assert.equal(f.actions.length,0);
 });

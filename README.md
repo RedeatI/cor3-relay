@@ -10,7 +10,7 @@ An independent public fork of **SaltApocalypse/cor3-helper**, originally based
 on **Femtoce11/cor3-helper**. Upstream history and copyright notices are retained.
 This is not an official COR3 or Salta release.
 
-Relay **2.1.0** lives in [`relay/`](relay/README.md). The upstream **2.0.4**
+Relay **2.2.0** lives in [`relay/`](relay/README.md). The upstream **2.0.5**
 TypeScript rewrite remains in `src/` as a separately buildable reference.
 The [architecture decision](docs/architecture/relay-runtime-import.md) explains
 the compatibility boundary and remaining technical debt. Only **Chrome and
@@ -34,7 +34,9 @@ changing the path or uninstalling can separate or remove saved configuration.
 No personal profiles, account data, logs or extension signing keys are included.
 Publishing this source does not update existing installations.
 
-## Relay 2.1
+## Relay 2.2
+
+[2.2.0 release notes](relay/RELEASE-2.2.0.md)
 
 - Account/document isolation, persistent browser-account binding and serialized
   settings writes. Explicit off values remain authoritative.
@@ -47,6 +49,12 @@ Publishing this source does not update existing installations.
   against the system clock. Unknown outcomes are retained for review.
 - Coalesced reads, compact summaries, bounded log persistence, correlated progress
   and responsive in-page controls.
+
+2.1.1 adds a remembered **CN / EN** choice at the end of the toolbar popup,
+reuses fresh C3 reads and displays hardware comparisons, software abilities and
+resource demands. Selected 2.0.5 job-claim, decrypt-analysis, plan-cache and slow
+loadout fixes are adapted alongside scoped Simple Decrypt improvements from
+1.11.0n. See the [review](relay/UPSTREAM-REVIEW.md).
 
 Tests use isolated fixtures and production functions. They do not prove live
 rewards, real CPU/FPS improvements, long background operation or OS sleep recovery.

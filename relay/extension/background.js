@@ -1090,9 +1090,9 @@
   // src/background/index.js
   async function keepWorkerAlive() {
     try {
-      const tab = await getCor3Tab();
-      if (tab) {
-        await Cor3CenterBinding.guard(tab.id, () => chrome.tabs.sendMessage(tab.id, { action: "keepWorkerAlive" }, {frameId:0}));
+      const target = Cor3CenterBinding.snapshot();
+      if (target) {
+        await Cor3CenterBinding.guard(target.tabId, () => chrome.tabs.sendMessage(target.tabId, { action: "keepWorkerAlive", centerIdentityDocumentId: target.documentId }, {frameId:0}), target);
       }
     } catch (e) {
       console.log("[COR3 Helper] Keep-alive failed:", e);

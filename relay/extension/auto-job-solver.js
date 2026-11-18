@@ -1292,7 +1292,7 @@
     }
     state._lastLoadoutFetchAt = now;
     log("Loadout: fetching fresh data...");
-    var waiting = waitForEvent("COR3_AUTOJOB_LOADOUT", 1e4, function(reply) { return reply.action === "get.options"; });
+    var waiting = waitForEvent("COR3_AUTOJOB_LOADOUT", 35000, function(reply) { return reply.action === "get.options"; });
     sendCmd("loadout.get", {});
     try {
       var data = await waiting;
@@ -2180,7 +2180,10 @@
       analysis = await readDecryptAnalysis(fileId, 3);
     }
     check();
-    if (!analysis || analysis.canDecrypt !== true) throw new Error(analysis ? "DECRYPT_POWER_INSUFFICIENT" : "DECRYPT_ANALYSIS_UNAVAILABLE");
+    log("Decrypt analysis after verified loadout: canDecrypt=" + (analysis ? analysis.canDecrypt : "unavailable") + ", power=" + (analysis && analysis.decryptPower != null ? analysis.decryptPower : "unknown"));
+    var zeroPower = analysis && analysis.canDecrypt === false && (analysis.decryptPower === 0 || analysis.decryptPower === null);
+    if (!analysis || analysis.canDecrypt !== true && !zeroPower) throw new Error(analysis ? "DECRYPT_POWER_INSUFFICIENT" : "DECRYPT_ANALYSIS_UNAVAILABLE");
+    if (zeroPower) log("Zero decrypt power may be stale; opening this verified file once for the game's authoritative result", "warn");
     ensureDecryptSolverEnabled();
     ensureIceWallSolverEnabled();
     ensureSimpleDecryptSolverEnabled();

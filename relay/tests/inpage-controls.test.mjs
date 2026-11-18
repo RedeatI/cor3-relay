@@ -19,7 +19,22 @@ function fixture(){
 }
 
 test('page view uses actual owned/equipped loadout shape and returns no credentials or foreign logs',async()=>{const f=fixture();f.data.loadoutData.equippedSoftware=[f.data.loadoutData.ownedSoftware[0]];const view=await f.client.read();assert.equal(view.scope.accountId,f.scope().accountId);assert.equal(view.loadout.software.length,1);assert.equal(view.loadout.software[0].installed,true);assert.ok(!JSON.stringify(view).includes('never-project-this'));assert.ok(!f.reads.flat().includes('bearerToken'));assert.equal(view.merc.hasInsurance,undefined);});
+test('full views prove admission twice and stop before heavy reads when the document changes',async()=>{
+ const f=fixture();let admissions=0;const admit=async()=>{++admissions;return {allowed:true,snapshot:f.scope()};};
+ const api=f.c.Cor3InPageControlsFactory.create({...f.deps,admit});await api.read(f.scope());assert.equal(admissions,2);
+ const first=f.scope(),get=f.deps.store.get;f.deps.store.get=async keys=>{const result=await get(keys);f.changeScope();return result;};
+ f.reads.length=0;await assert.rejects(api.read(first),/PAGE_CHANGED/);assert.equal(f.reads.length,1);
+});
 test('unknown, paused or changed account/document cannot write or dispatch',async()=>{for(const mode of ['unbound','paused','changed']){const f=fixture(),scope=f.scope();if(mode==='unbound')f.unadmit();if(mode==='paused')f.deny();if(mode==='changed')f.changeScope();await assert.rejects(f.client.saveMerc({enabled:false},scope));await assert.rejects(f.client.refresh('markets',scope));assert.equal(f.writes.length,0);assert.equal(f.requests.length,0);}});
+test('collapsed C3 can sample same-document live queue without opening the panel or contacting the background',()=>{
+ const f=fixture(),scope=f.scope();let connection='CENTER_CONNECTED',net={...scope,active:'initial-fetch',queued:['auto-daily'],lease:{owner:'initial-fetch'}};
+ const client=f.c.Cor3InPageControlsFactory.create({...f.deps,identity:{snapshot:f.scope,status:()=>({code:connection})},admit:()=>assert.fail('local sample must not probe'),queue:()=>net});
+ assert.equal(client.readStatus().queue.active,'initial-fetch');assert.equal(client.readStatus().queue.queued.length,1);
+ connection='CENTER_PROBE_TIMEOUT';assert.equal(client.readStatus().queue,null);assert.equal(client.readStatus().scope,null);
+ connection='CENTER_CONNECTED';f.changeScope();assert.equal(client.readStatus().queue,null);
+ net={...f.scope(),active:null,queued:[]};assert.equal(client.readStatus().queue.active,'');
+ assert.equal(f.reads.length+f.writes.length+f.requests.length,0);
+});
 test('public controls whitelist rejects arbitrary settings, purchases and equipment ids',async()=>{const f=fixture();await assert.rejects(f.client.refresh('purchaseSpecialist',f.scope()));await assert.rejects(f.client.saveMerc({bearerToken:'no'},f.scope()));await assert.rejects(f.client.saveMerc({hasInsurance:false},f.scope()));await assert.rejects(f.client.equip('hardware','not-owned',true,f.scope()));await assert.rejects(f.client.equip('hardware','cpu-new',false,f.scope()));assert.equal(f.writes.length,0);assert.equal(f.requests.length,0);});
 test('one atomic budgeted save enables native expedition logic and preserves other fields',async()=>{const f=fixture();await f.client.saveMerc({enabled:true,autoClaim:true,autoDecide:true,autoChooseMerc:false,mercenaryId:null,locationConfigId:null,applyMercCostLimiter:true,maxMercCost:5000,pauseBelowCredits:true,minCredits:10000},f.scope());assert.equal(f.writes.length,1);assert.equal(f.data.autoSendMerc.enabled,true);assert.equal(f.data.autoSendMerc.hasInsurance,true);assert.equal(f.data.autoSendMerc.legacyOther,'preserve');assert.equal(f.data.autoSendMerc.mercenaryName,'');assert.equal(f.requests.length,0);});
 test('new unbudgeted automation, malformed amounts and unknown selections are rejected',async()=>{const f=fixture();for(const patch of [{enabled:true},{enabled:true,applyMercCostLimiter:false},{maxMercCost:-1},{maxMercCost:NaN},{maxMercCost:1000000},{minCredits:Infinity},{autoClaim:'true'},{mercenaryId:'foreign'},{locationConfigId:'foreign'}])await assert.rejects(f.client.saveMerc(patch,f.scope()));assert.equal(f.writes.length,0);});

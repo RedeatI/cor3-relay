@@ -86,7 +86,7 @@
   title.style.display = "none";
   const output = document.createElement("pre");
   output.id = "cor3-helper-diagnostics-report";
-  output.style.cssText = "margin:6px 0 0;max-height:45vh;overflow:auto;white-space:pre-wrap";
+  output.style.cssText = "margin:0;padding:9px;border:1px solid #30515e;border-radius:5px;background:#091822;max-height:45vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;scrollbar-width:thin";
   output.textContent = "读取当前页…";
   details.append(title, output);
   host.append(details);

@@ -94,7 +94,7 @@
 		// EXTERNAL game page fallback: the root may not carry any component name.
 		if (isExternalGamePage()) {
 			const root = document.querySelector('#root, #app, main') || document.body;
-			if (root && /decrypt|解密/i.test(root.textContent || '')) {
+			if (root) {
 				return { app: root, doc: document };
 			}
 		}
@@ -103,32 +103,32 @@
 
 	function buttonScore(btn) {
 		if (!btn || btn.disabled) return -1;
-		const text = String(btn.textContent || '').trim();
+		const text = String(btn.textContent || btn.value || '').trim();
 		let meta = '';
 		if (btn.getAttribute) {
-			meta = ['aria-label', 'title', 'data-sentry-element', 'data-component-name']
+			meta = ['aria-label', 'title', 'data-sentry-element', 'data-component-name', 'class']
 				.map((name) => btn.getAttribute(name) || '').join(' ');
 		}
 		const hay = text + ' ' + meta;
-		if (/close|cancel|取消|关闭/i.test(hay)) return -1;
+		if (/close|cancel|取消|关闭|强制|暴力|brute|force[-_ ]?(?:decrypt|hack)|bypass|skip/i.test(hay)) return -1;
 		let score = 0;
 		if (/decrypt|解密/i.test(hay)) score += 10;
-		else if (/start|begin|run|hack|开始|确认|继续/i.test(hay)) score += 5;
+		else if (/start|begin|run|hack|开始|确认|继续|crack|взлом/i.test(hay)) score += 5;
 		if (/decryptbutton/i.test(meta)) score += 6;
 		if (!text && !meta.trim()) score -= 2;
 		return score;
 	}
 
 	function findDecryptButton(app, doc) {
-		const scopes = [];
-		if (app && app.querySelectorAll) scopes.push(app);
-		if (scopes.indexOf(doc) === -1) scopes.push(doc);
+		// The identified game container is the only click scope. Never fall back
+		// to another dialog in the page when the game has no eligible control.
+		const scopes = app && app.querySelectorAll ? [app] : [];
 
 		const candidates = [];
 		for (const scope of scopes) {
 			let nodes = [];
 			try {
-				nodes = Array.from(scope.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]'));
+				nodes = Array.from(scope.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"], [data-sentry-element="DecryptButtonStyled"]'));
 			} catch (e) { continue; }
 			for (const btn of nodes) {
 				const score = buttonScore(btn);
@@ -137,10 +137,7 @@
 		}
 		candidates.sort((a, b) => b.score - a.score);
 		if (candidates.length) return candidates[0].btn;
-		// Legacy generated class, kept only as a last resort.
-		try {
-			return doc.querySelector('button.go1966296074, [data-sentry-element="DecryptButtonStyled"]') || null;
-		} catch (e) { return null; }
+		return null;
 	}
 
 	function getProgressPercent(app, doc) {
@@ -169,6 +166,7 @@
 		postStatus('Simple Decrypt detected — solving...', 'info');
 		const started = Date.now();
 		let clicked = false;
+		let clickedAt = 0;
 		let lastPercent = -1;
 		let warned = false;
 
@@ -206,6 +204,7 @@
                     btn.click();
 				}
 				clicked = true;
+				clickedAt = Date.now();
 				log('Clicked Decrypt button: ' + String(btn.textContent || '').trim().slice(0, 40));
 				postStatus('Clicked Decrypt — waiting for progress...', 'info');
 			}
@@ -215,7 +214,7 @@
 				lastPercent = pct;
 				if (pct % 25 === 0 || pct >= 90) postStatus('Decrypting... ' + pct + '%', 'info');
 			}
-			if (pct !== null && pct >= 100) {
+			if (pct !== null && pct >= 100 && (!isExternalGamePage() || Date.now() - clickedAt >= 3000)) {
 				log('Simple Decrypt reached 100%');
 				postStatus('Decryption reached 100%', 'success');
 				await sleep(1500);
@@ -233,17 +232,16 @@
 
 	async function watch() {
 		log('Simple Decrypt solver watching for minigame...');
+		let handledApp = null, handledDocument = null;
 		while (masterAllowed()) {
 			await sleep(POLL_MS);
             if (!masterAllowed()) return;
 			const found = findApp();
-            if (!found) continue;
+            if (!found) { handledApp = null; handledDocument = null; continue; }
+            if (found.app === handledApp && found.doc === handledDocument) continue;
+            handledApp = found.app; handledDocument = found.doc;
 
 			await solveOnce(found.doc);
-			const waitStart = Date.now();
-			while (masterAllowed() && Date.now() - waitStart < 15000 && findApp()) {
-				await sleep(200);
-			}
 		}
   }
   // Restart requires a fresh ticketed injection, never an uncorrelated START.

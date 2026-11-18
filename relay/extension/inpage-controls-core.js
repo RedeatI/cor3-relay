@@ -4,22 +4,51 @@
  const REFRESH=Object.freeze({markets:['refreshAllMarketsSeq'],loadout:['requestLoadout'],expeditions:['requestExpeditions','requestMercenaries','requestUsolMercenaries','requestExpeditionConfig'],drone:['requestDroneOptions'],daily:['fetchDailyOps']});
  const error=code=>Object.assign(Error(code),{code});
  const same=(a,b)=>a&&b&&a.accountId===b.accountId&&a.documentId===b.documentId;
- const clean=x=>String(x??'').slice(0,160),id=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(x);
+ const clean=x=>String(x??'').slice(0,160),id=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(x),CACHE_MS=5*60*1000;
+ const CACHE_POLICY=Object.freeze({loadout:CACHE_MS,expeditions:60000,drone:60000,daily:CACHE_MS,markets:CACHE_MS});
  function mercList(raw){if(!Array.isArray(raw)&&!Array.isArray(raw?.mercenaries))return null;const list=Array.isArray(raw)?raw:raw.mercenaries;return [...new Map([...list,...(Array.isArray(raw?.eliteSlots)?raw.eliteSlots.map(x=>x?.mercenary):[])].filter(x=>x?.id).map(x=>[x.id,x])).values()];}
  function items(data,kind){
-  if(kind==='hardware'){const all=[...Object.values(data?.equippedHardware||{}),...(Array.isArray(data?.ownedHardware)?data.ownedHardware:[])].filter(x=>x?.id);return [...new Map(all.map(x=>[x.id,x])).values()];}
+  if(kind==='hardware'){const installed=Object.entries(data?.equippedHardware||{}).filter(([,item])=>item?.id).map(([slot,item])=>({...item,category:item.category||slot.toUpperCase()})),all=[...installed,...(Array.isArray(data?.ownedHardware)?data.ownedHardware:[])],unique=new Map();for(const item of all)if(item?.id&&!unique.has(item.id))unique.set(item.id,item);return [...unique.values()];}
   const installed=Array.isArray(data?.equippedSoftware)?data.equippedSoftware:[],owned=Array.isArray(data?.ownedSoftware)?data.ownedSoftware:[],ids=new Set(installed.map(x=>x.id));
   return [...installed.map(x=>({...x,installed:true})),...owned.filter(x=>!ids.has(x.id)).map(x=>({...x,installed:false}))];
  }
  function equipped(data,kind,moduleId){if(kind==='hardware')return Object.values(data?.equippedHardware||{}).some(x=>x?.id===moduleId);const entry=items(data,'software').find(x=>x?.id===moduleId);return !!entry?.installed;}
- function create({identity=root.Cor3CenterIdentity,admit,store=root.Cor3CenterStore,allowed=()=>root.Cor3Automation?.allowed()===true,dispatch,enqueue,queue=()=>root.Cor3NetworkRuntime?.snapshot(),version='2.1.0',now=()=>Date.now(),sleep=ms=>new Promise(r=>setTimeout(r,ms)),observeMs=15000}={}){
+ function equipmentRows(loadout,kind){
+  const details=root.Cor3LoadoutDetails,owned=kind==='hardware'?loadout?.ownedHardware:loadout?.ownedSoftware;
+  const images=new Map();
+  if(details&&Array.isArray(owned))for(const item of owned){const image=details.imageUrl(item?.image);if(item?.id&&image)images.set(item.id,image);}
+  return items(loadout,kind).map(item=>{
+   const info=details?.project(item,kind)||{stats:[],functions:[],demands:[],manufacturer:'',version:''};
+   const slot=kind==='hardware'?{category:clean(item.category).toUpperCase()}:{};
+   return {id:clean(item.id),name:clean(item.name),...slot,installed:kind==='hardware'?equipped(loadout,kind,item.id):item.installed===true,...info,image:info.image||images.get(item.id)||null};
+  });
+ }
+ const queueView=net=>net?{active:clean(net.active),queued:Array.isArray(net.queued)?net.queued.map(clean):[],blocked:clean(net.blocked),owner:clean(net.lease?.owner)}:null;
+ function create({identity=root.Cor3CenterIdentity,admit,store=root.Cor3CenterStore,allowed=()=>root.Cor3Automation?.allowed()===true,dispatch,enqueue,queue=()=>root.Cor3NetworkRuntime?.snapshot(),version='2.2.0',now=()=>Date.now(),sleep=ms=>new Promise(r=>setTimeout(r,ms)),observeMs=35000}={}){
   let lastOperation=null,sequence=0,pending=null,readSequence=0,autoBatch=null,autoFlight=null;
-  let heavyView=null,visualRevision=0;
+  let heavyView=null,visualRevision=0,equipmentView=null;
   const heavyKeys=['loadoutData','mercenariesData','usolMercenariesData','expeditionConfigData','usolExpeditionConfigData','droneData','dailyOpsData','expeditionsData'];
   const stampKeys=['loadoutUpdatedAt','mercenariesUpdatedAt','usolMercenariesUpdatedAt','droneDataUpdatedAt','dailyOpsUpdatedAt','expeditionsDataUpdatedAt'];
   const lightKeys=KEYS.filter(k=>!heavyKeys.includes(k)),canObserve=typeof store.onChanged?.addListener==='function';
-  store.onChanged?.addListener(changes=>{if([...heavyKeys,...stampKeys].some(k=>Object.hasOwn(changes,k))){++visualRevision;heavyView=null;}});
-  async function viewData(scope){const light=await store.get(lightKeys);await check(scope);const stamp=JSON.stringify(stampKeys.map(k=>light[k]));if(canObserve&&heavyView&&same(heavyView.scope,scope)&&heavyView.stamp===stamp&&heavyView.revision===visualRevision)return {...light,...heavyView.values};const revision=visualRevision,values=await store.get(heavyKeys);await check(scope);if(canObserve&&revision===visualRevision)heavyView={scope:{...scope},stamp,revision,values};return {...light,...values};}
+  const viewInvalidators=[...heavyKeys,...stampKeys];
+  const stampOf=data=>JSON.stringify(stampKeys.map(k=>data[k]));
+  store.onChanged?.addListener(changes=>{if(viewInvalidators.some(k=>Object.hasOwn(changes,k))){++visualRevision;heavyView=null;}});
+  async function viewData(scope){
+   if(!canObserve||!heavyView||!same(heavyView.scope,scope)){
+    const revision=visualRevision,data=await store.get(KEYS);
+    if(!same(identity.snapshot(),scope))throw error('PAGE_CHANGED');
+    if(canObserve&&revision===visualRevision){const values=Object.fromEntries(heavyKeys.filter(k=>Object.hasOwn(data,k)).map(k=>[k,data[k]]));heavyView={scope:{...scope},stamp:stampOf(data),revision,values};}
+    return data;
+   }
+   const light=await store.get(lightKeys);
+   if(!same(identity.snapshot(),scope))throw error('PAGE_CHANGED');
+   const stamp=stampOf(light);
+   if(heavyView&&same(heavyView.scope,scope)&&heavyView.stamp===stamp&&heavyView.revision===visualRevision)return {...light,...heavyView.values};
+   const revision=visualRevision,values=await store.get(heavyKeys);
+   if(!same(identity.snapshot(),scope))throw error('PAGE_CHANGED');
+   if(revision===visualRevision)heavyView={scope:{...scope},stamp,revision,values};
+   return {...light,...values};
+  }
   const autoAttempts=new Map(),autoKinds=['loadout','expeditions','drone','daily','markets'];
   const jobBatch=root.Cor3JobBatchFactory?.create({check:s=>check(s,true),read:k=>store.get(k),send,queue,now,sleep,busy:()=>root.Cor3PageBusy?.()===true});
   const autoMarket=root.Cor3AutoMarketFactory?.create({scope:()=>identity?.snapshot(),check:s=>check(s,true),read:k=>store.get(k),claim:async(p,s)=>{await check(s,true);await store.update('autoMarketJobsSeenV1',p);await check(s,true);},begin:(s,f)=>jobBatch.beginAfterRefresh(s,f),batch:s=>jobBatch.status(s),queue,allowed,busy:()=>root.Cor3PageBusy?.()===true,now,log:(code,_phase,info)=>root.Cor3RuntimeLog?.log(code,'自动市场任务：'+({idle:'等待任一市场新任务',off:'已关闭',waiting:'等待当前限时操作或队列',submitted:'本轮已加入队列',empty:'新任务池没有待执行任务',review:'结果待核对',admitting:'正在加入队列','legacy-loop':'已有连续自动任务，未重复启动','waiting-permission':'等待当前页面许可'}[_phase]||_phase),info)});
@@ -27,13 +56,15 @@
   store.onChanged?.addListener(changes=>{if(Object.keys(changes).some(k=>autoMarketWatchKeys.has(k)))autoMarket?.wake();});
   jobBatch?.subscribe(()=>autoMarket?.wake());
   async function saveAutoMarket(enabled,selection,expected){const scope=await check(expected,true);if(typeof enabled!=='boolean'||!Array.isArray(selection)||selection.some(x=>!root.Cor3JobBatchFactory.types.includes(x)))throw error('PAGE_SETTING_INVALID');const types=root.Cor3JobBatchFactory.resolveTypes(selection);if(enabled&&!types.length)throw error('PAGE_JOB_TYPES_EMPTY');await store.set({autoRunMarketJobsEnabled:enabled,autoFinishAllJobTypes:types});await check(scope,true);const data=await store.get(['autoRunMarketJobsEnabled','autoFinishAllJobTypes']);await check(scope,true);if(data.autoRunMarketJobsEnabled!==enabled||JSON.stringify(data.autoFinishAllJobTypes)!==JSON.stringify(types))throw error('PAGE_SAVE_UNCONFIRMED');autoMarket?.wake();return {phase:'saved'};}
-  const freshAt=(value,at)=>Number.isFinite(value)&&value>0&&value<=at+1000&&at-value<30000;
+  const freshAt=(value,at,maxAge)=>Number.isFinite(value)&&value>0&&value<=at+1000&&at-value<maxAge;
+  const freshnessKeys={loadout:['loadoutUpdatedAt'],expeditions:['expeditionsDataUpdatedAt'],drone:['droneDataUpdatedAt'],daily:['dailyOpsUpdatedAt'],markets:['marketDataUpdatedAt','darkMarketDataUpdatedAt','soyuzMarketDataUpdatedAt','usolMarketDataUpdatedAt']};
   function freshData(kind,data,at){
-   if(kind==='loadout')return !!data.loadoutData&&!data.loadoutError&&freshAt(data.loadoutUpdatedAt,at);
-   if(kind==='expeditions')return Array.isArray(data.expeditionsData)&&mercList(data.mercenariesData)!==null&&mercList(data.usolMercenariesData)!==null&&!!data.expeditionConfigData&&freshAt(data.expeditionsDataUpdatedAt,at);
-   if(kind==='drone')return data.droneData!=null&&Object.hasOwn(data.droneData,'drone')&&freshAt(data.droneDataUpdatedAt,at);
-   if(kind==='daily')return data.dailyOpsData!=null&&freshAt(data.dailyOpsUpdatedAt,at);
-   return ['marketDataUpdatedAt','darkMarketDataUpdatedAt','soyuzMarketDataUpdatedAt','usolMarketDataUpdatedAt'].every(k=>freshAt(data[k],at));
+   const fresh=value=>freshAt(value,at,CACHE_POLICY[kind]);
+   if(kind==='loadout')return !!data.loadoutData&&!data.loadoutError&&fresh(data.loadoutUpdatedAt);
+   if(kind==='expeditions')return Array.isArray(data.expeditionsData)&&mercList(data.mercenariesData)!==null&&mercList(data.usolMercenariesData)!==null&&!!data.expeditionConfigData&&fresh(data.expeditionsDataUpdatedAt);
+   if(kind==='drone')return data.droneData!=null&&Object.hasOwn(data.droneData,'drone')&&fresh(data.droneDataUpdatedAt);
+   if(kind==='daily')return data.dailyOpsData!=null&&fresh(data.dailyOpsUpdatedAt);
+   return ['marketDataUpdatedAt','darkMarketDataUpdatedAt','soyuzMarketDataUpdatedAt','usolMarketDataUpdatedAt'].every(k=>fresh(data[k]))&&Object.values(root.Cor3JobBatchFactory?.markets||{}).every(m=>{const reset=Date.parse((data[m.key+'SummaryV1']||data[m.key])?.nextJobsResetAt);return !Number.isFinite(reset)||reset>at;});
   }
   async function autoReadStep(expected,session,retryKinds){
    const local=identity?.snapshot(),localQueue=queue();
@@ -42,19 +73,21 @@
    if(!autoBatch||autoBatch.session!==session||!same(autoBatch.scope,scope))autoBatch={scope,session,remaining:Array.isArray(retryKinds)?autoKinds.filter(k=>retryKinds.includes(k)):[...autoKinds],failed:[]};
    const live=queue();if(live&&!same(live,scope))throw error('PAGE_CHANGED');if(live&&(live.active||live.queued?.length||live.blocked)){for(const item of autoAttempts.values())if(same(item.scope,scope)&&!item.done)item.waitAt=now();return {phase:'waiting',owner:clean(live.blocked||live.active||'queue')};}
    const batch=autoBatch,data=await viewData(scope);await check(scope,true);const at=now();batch.failed=batch.failed.filter(kind=>!freshData(kind,data,at));
-   batch.remaining=batch.remaining.filter(kind=>{if(!freshData(kind,data,at))return true;const previous=autoAttempts.get(kind);if(previous&&same(previous.scope,scope))previous.done=true;return false;});
+   batch.remaining=batch.remaining.filter(kind=>{if(!freshData(kind,data,at))return true;const previous=autoAttempts.get(kind);if(previous&&same(previous.scope,scope)){previous.done=true;previous.succeeded=true;}return false;});
    while(batch.remaining.length){const kind=batch.remaining[0],previous=autoAttempts.get(kind);
     const net=queue();if(net&&!same(net,scope))throw error('PAGE_CHANGED');
     if(net&&(net.active||net.queued?.length||net.blocked)){if(previous&&same(previous.scope,scope)&&!previous.done)previous.waitAt=at;return {phase:'waiting',owner:clean(net.active||net.blocked||'queue')};}
-    if(previous&&same(previous.scope,scope)&&(!previous.done||at-previous.at<30000)){
-     if(!previous.done&&at-previous.waitAt<15000)return {phase:'loading',kind};
+    if(previous&&same(previous.scope,scope)&&(!previous.done||!previous.succeeded&&at-previous.at<30000)){
+     if(!previous.done&&at-previous.waitAt<(kind==='loadout'?35000:15000))return {phase:'loading',kind};
      previous.done=true;batch.failed.push(kind);batch.remaining.shift();continue;
     }
     autoAttempts.set(kind,{scope,at,waitAt:at,done:false});
-    try{await refresh(kind,scope);}catch(e){if(!same(identity.snapshot(),scope)||!allowed())throw e;batch.failed.push(kind);batch.remaining.shift();return {phase:'loading',kind:batch.remaining[0]||kind};}
+    try{await refresh(kind,scope);}catch(e){if(!same(identity.snapshot(),scope)||!allowed())throw e;const attempt=autoAttempts.get(kind);if(attempt&&same(attempt.scope,scope)){attempt.done=true;attempt.succeeded=false;}batch.failed.push(kind);batch.remaining.shift();return {phase:'loading',kind:batch.remaining[0]||kind};}
     return {phase:'loading',kind};
    }
-   return {phase:batch.failed.length?'partial':'complete',failed:[...new Set(batch.failed)]};
+   const expiries=autoKinds.filter(kind=>freshData(kind,data,at)).flatMap(kind=>freshnessKeys[kind].map(key=>data[key]+CACHE_POLICY[kind]));
+   for(const m of Object.values(root.Cor3JobBatchFactory?.markets||{})){const reset=Date.parse((data[m.key+'SummaryV1']||data[m.key])?.nextJobsResetAt);if(Number.isFinite(reset)&&reset>at)expiries.push(reset);}
+   return {phase:batch.failed.length?'partial':'complete',failed:[...new Set(batch.failed)],freshUntil:expiries.length?Math.min(...expiries):null};
   }
   function autoRead(expected,session=0,retryKinds=null){
    if(autoFlight)return autoFlight;
@@ -64,11 +97,25 @@
   async function check(expected,write=false){const local=identity?.snapshot();if(!local||!/^FREEL_[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}$/.test(local.accountId)||!local.documentId)throw error('PAGE_ACCOUNT_UNAVAILABLE');if(expected&&!same(expected,local))throw error('PAGE_CHANGED');
    let proof;try{proof=await admit(local.documentId);}catch{throw error('PAGE_BINDING_UNAVAILABLE');}const after=identity.snapshot();if(after&&!same(local,after))throw error('PAGE_CHANGED');if(proof?.allowed!==true||!same(local,after)||!same(local,proof.snapshot))throw error('PAGE_BINDING_UNAVAILABLE');if(write&&!allowed())throw error('PAGE_AUTOMATION_PAUSED');return Object.freeze({accountId:local.accountId,documentId:local.documentId});
   }
+  // Read only the current document's in-memory state. Cached storage and dispatch are not involved.
+  function readStatus(){
+   const scope=identity?.snapshot(),connection=identity?.status?.().code||'CENTER_ACCOUNT_NOT_READY';
+   const empty={at:now(),connection,scope:null,queue:null,batch:null,allowed:false};
+   if(!scope||connection!=='CENTER_CONNECTED')return empty;
+   const net=queue();
+   if(!same(scope,identity.snapshot()))return {...empty,connection:'CENTER_BINDING_REVOKED'};
+   if(!same(net,scope))return {...empty,scope,allowed:allowed()};
+   let batch=null;
+   try{batch=jobBatch?.status(scope)||null;}catch(e){if(e.code==='PAGE_QUEUE_UNREAD')return {...empty,scope,allowed:allowed()};throw e;}
+   return {...empty,scope,queue:queueView(net),batch,allowed:allowed()};
+  }
   async function read(expected){const serial=++readSequence,scope=await check(expected);const data=await viewData(scope);await check(scope);if(serial!==readSequence)throw error('PAGE_READ_SUPERSEDED');
    if(pending&&same(pending.scope,scope))await reconcile(data);
    const own=x=>same(x,scope),live=queue(),net=own(live)?live:own(data.networkRuntimeStatus)?data.networkRuntimeStatus:null;
-   const loadout=data.loadoutData;const hardware=items(loadout,'hardware').map(x=>({id:clean(x.id),name:clean(x.name),category:clean(x.category),installed:equipped(loadout,'hardware',x.id)}));
-   const software=items(loadout,'software').map(x=>({id:clean(x.id),name:clean(x.name),installed:x.installed===true}));
+   const loadout=data.loadoutData;
+   let equipment=canObserve&&equipmentView?.data===loadout&&equipmentView.revision===visualRevision?equipmentView:null;
+   if(!equipment){equipment={data:loadout,revision:visualRevision,hardware:equipmentRows(loadout,'hardware'),software:equipmentRows(loadout,'software'),resources:root.Cor3LoadoutDetails?.projectResources?.(loadout?.resources)||[]};if(canObserve)equipmentView=equipment;}
+   const {hardware,software}=equipment;
    const logs=own(data.automationRunLogs)&&Array.isArray(data.automationRunLogs.entries)?data.automationRunLogs.entries.slice(-10).map(x=>({at:Number(x.at)||0,code:clean(x.code),message:root.Cor3RunLog?.text(x.message).slice(0,240)||clean(x.message)})):[];
    const coreMercs=mercList(data.mercenariesData),usolMercs=mercList(data.usolMercenariesData),mercs=[...(coreMercs||[]),...(usolMercs||[])];
    const locations=[data.expeditionConfigData,data.usolExpeditionConfigData].flatMap(x=>Array.isArray(x?.locations)?x.locations:[]);
@@ -78,7 +125,7 @@
    const droneError=data.droneOptionsReadError?.documentId===scope.documentId&&Number(data.droneOptionsReadError.at)>=Number(data.droneDataUpdatedAt||0)?clean(data.droneOptionsReadError.code):null;
    const readStatus={coreMercenaries:coreMercs===null?'unread':coreMercs.length?'ready':'empty',usolMercenaries:usolMercs===null?'unread':usolMercs.length?'ready':'empty',drone:droneError?'error':data.droneData?.drone?'ready':data.droneData&&Object.hasOwn(data.droneData,'drone')&&data.droneData.drone===null?'none':'unread',droneError};
    const retainedSettings={merc:project(data.autoSendMerc,['hasInsurance','applyMercCostLimiter','pauseBelowCredits','maxMercCost','minCredits']),drone:project(data.autoDrone,['repairEnabled','pauseOnRepairFail'])};
-   return {scope,version,jobs:root.Cor3JobBatchFactory?{autoEnabled:data.autoRunMarketJobsEnabled!==false,autoStatus:autoMarket?.status()||null,types:root.Cor3JobBatchFactory.resolveTypes(data.autoFinishAllJobTypes),batch:jobBatch.status(scope),recent:{at:Number(data.autoJobsTrackerUpdatedAt)||null,rows:(Array.isArray(data.autoJobsTracker)?data.autoJobsTracker:[]).slice(-50).map(x=>({jobId:clean(x.jobId),name:root.Cor3RunLog?.text(x.name||x.type||'').slice(0,100)||'',status:['pending','running','done','failed','skipped','bugged'].includes(x.status)?x.status:'unknown',error:root.Cor3RunLog?.text(x.error||'').slice(0,320)||''}))},resets:Object.fromEntries(Object.entries(root.Cor3JobBatchFactory.markets).map(([k,m])=>[k,(data[m.key+'SummaryV1']||data[m.key])?.nextJobsResetAt||null]))}:null,readStatus,retainedSettings,allowed:allowed(),helperMode:data.helperMode===true,defaults:{markets:data.autoUpdateMarkets,daily:data.autoDailyHackEnabled},merc,drone,droneAvailable:!!data.droneData?.drone,loadout:{available:!!loadout,at:Number(data.loadoutUpdatedAt)||null,hardware,software,equippedHardware:Object.entries(loadout?.equippedHardware||{}).map(([category,x])=>({category:clean(category),name:clean(x?.name)}))},mercenaries:mercs.map(x=>({id:clean(x.id),name:clean(x.callsign||x.name)})),locations:locations.map(x=>({id:clean(x.id),name:clean(x.name)})),queue:net?{active:clean(net.active),queued:Array.isArray(net.queued)?net.queued.map(clean):[],blocked:clean(net.blocked),owner:clean(net.lease?.owner)}:null,logs,operation:same(lastOperation,scope)?{...lastOperation}:null,cache:Object.fromEntries(['marketDataUpdatedAt','darkMarketDataUpdatedAt','soyuzMarketDataUpdatedAt','usolMarketDataUpdatedAt','expeditionsDataUpdatedAt','droneDataUpdatedAt','dailyOpsUpdatedAt'].map(k=>[k,Number.isFinite(data[k])?data[k]:null]))};
+   return {scope,version,jobs:root.Cor3JobBatchFactory?{autoEnabled:data.autoRunMarketJobsEnabled!==false,autoStatus:autoMarket?.status()||null,types:root.Cor3JobBatchFactory.resolveTypes(data.autoFinishAllJobTypes),batch:jobBatch.status(scope),recent:{at:Number(data.autoJobsTrackerUpdatedAt)||null,rows:(Array.isArray(data.autoJobsTracker)?data.autoJobsTracker:[]).slice(-50).map(x=>({jobId:clean(x.jobId),name:root.Cor3RunLog?.text(x.name||x.type||'').slice(0,100)||'',status:['pending','running','done','failed','skipped','bugged'].includes(x.status)?x.status:'unknown',error:root.Cor3RunLog?.text(x.error||'').slice(0,320)||''}))},resets:Object.fromEntries(Object.entries(root.Cor3JobBatchFactory.markets).map(([k,m])=>[k,(data[m.key+'SummaryV1']||data[m.key])?.nextJobsResetAt||null]))}:null,readStatus,retainedSettings,allowed:allowed(),helperMode:data.helperMode===true,defaults:{markets:data.autoUpdateMarkets,daily:data.autoDailyHackEnabled},merc,drone,droneAvailable:!!data.droneData?.drone,loadout:{available:!!loadout,at:Number(data.loadoutUpdatedAt)||null,hardware,software,resources:equipment.resources,equippedHardware:Object.entries(loadout?.equippedHardware||{}).map(([category,x])=>({category:clean(category),name:clean(x?.name)}))},mercenaries:mercs.map(x=>({id:clean(x.id),name:clean(x.callsign||x.name)})),locations:locations.map(x=>({id:clean(x.id),name:clean(x.name)})),queue:queueView(net),logs,operation:same(lastOperation,scope)?{...lastOperation}:null,cache:Object.fromEntries(['marketDataUpdatedAt','darkMarketDataUpdatedAt','soyuzMarketDataUpdatedAt','usolMarketDataUpdatedAt','expeditionsDataUpdatedAt','droneDataUpdatedAt','dailyOpsUpdatedAt'].map(k=>[k,Number.isFinite(data[k])?data[k]:null]))};
   }
   async function send(action,scope,extra={}){await check(scope,true);const result=await dispatch({action,...extra,centerIdentityDocumentId:scope.documentId});await check(scope,true);if(!result||result.success===false||result.ok===false||result.error)throw error('PAGE_ACTION_REJECTED');return result;}
   async function refresh(kind,expected){if(!Object.hasOwn(REFRESH,kind))throw error('PAGE_ACTION_UNSUPPORTED');const scope=await check(expected,true),responses=[];for(const action of REFRESH[kind])responses.push(await send(action,scope));return {phase:responses.some(x=>x.queued==='queued'||x.queued==='already-queued')?'queued':'requested'};}
@@ -125,7 +172,7 @@
    });
    if(outcome==='master-paused')throw error('PAGE_AUTOMATION_PAUSED');if(outcome==='already-running'||outcome==='already-queued')throw error('PAGE_EQUIPMENT_PENDING');return {phase:outcome==='started'?'requested':'queued',id:opId};
   }
-  return Object.freeze({read,refresh,autoRead,equip,saveAutoMarket,startAutoMarket:()=>autoMarket?.start(),stopAutoMarket:()=>autoMarket?.stop(),onJobsState:fn=>{const off=jobBatch?.subscribe(fn),offQueue=root.Cor3NetworkRuntime?.subscribe?.(()=>jobBatch?.publish());return()=>{off?.();offQueue?.();};},runJobs:(selection,scope)=>{if(!jobBatch)throw error('PAGE_JOB_UNAVAILABLE');return jobBatch.begin(scope,selection);},stopJobs:scope=>{if(!jobBatch)throw error('PAGE_JOB_UNAVAILABLE');return jobBatch.stop(scope);},saveMerc:(x,s)=>save('merc',x,s),saveDrone:(x,s)=>save('drone',x,s)});
+  return Object.freeze({read,readStatus,refresh,autoRead,equip,saveAutoMarket,startAutoMarket:()=>autoMarket?.start(),stopAutoMarket:()=>autoMarket?.stop(),onJobsState:fn=>{const off=jobBatch?.subscribe(fn),offQueue=root.Cor3NetworkRuntime?.subscribe?.(()=>jobBatch?.publish());return()=>{off?.();offQueue?.();};},runJobs:(selection,scope)=>{if(!jobBatch)throw error('PAGE_JOB_UNAVAILABLE');return jobBatch.begin(scope,selection);},stopJobs:scope=>{if(!jobBatch)throw error('PAGE_JOB_UNAVAILABLE');return jobBatch.stop(scope);},saveMerc:(x,s)=>save('merc',x,s),saveDrone:(x,s)=>save('drone',x,s)});
  }
- root.Cor3InPageControlsFactory=Object.freeze({create,keys:KEYS});
+ root.Cor3InPageControlsFactory=Object.freeze({create,keys:KEYS,cacheMs:CACHE_MS,cachePolicy:CACHE_POLICY});
 })(globalThis);

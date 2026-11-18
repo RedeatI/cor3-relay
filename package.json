@@ -1,11 +1,11 @@
 {
     "name": "cor3-helper",
-    "version": "2.0.4",
+    "version": "2.0.5",
     "private": true,
-    "description": "COR3 Helper 2.0 — Chrome extension for cor3.gg",
+    "description": "COR3 Helper 2.0 \u2014 Chrome extension for cor3.gg",
     "cor3Fork": {
         "releaseLabel": "salta",
-        "build": 268
+        "build": 272
     },
     "engines": {
         "node": ">=24"
@@ -25,7 +25,7 @@
         "catalog": "esbuild src/tools/catalog/cli.ts --bundle --platform=node --format=esm --outfile=dist-tools/catalog.mjs && node dist-tools/catalog.mjs",
         "relay:build": "node relay/tools/build.ts",
         "relay:check": "tsc --noEmit -p relay/tsconfig.json && node relay/tools/check.ts",
-        "relay:lint": "oxlint relay/tools",
+        "relay:lint": "oxlint relay/tools relay/src",
         "relay:test": "node relay/tools/test.ts"
     },
     "devDependencies": {

@@ -3,6 +3,13 @@
  const ACCOUNT=/^FREEL_[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}$/,HEX=/^[a-f0-9]{32}$/;
  const exact=(o,k)=>o&&typeof o==='object'&&!Array.isArray(o)&&Object.keys(o).sort().join('|')===[...k].sort().join('|');
  function safeUrl(x){try{const u=new URL(x);return typeof x==='string'&&x.length<=2048&&u.protocol==='https:'&&['cor3.gg','os.cor3.gg'].includes(u.hostname)&&!u.port&&!u.username&&!u.password}catch{return false}}
+ function countActiveJobs(market) {
+  if (!Array.isArray(market?.jobs)) return null;
+  const taken = Array.isArray(market.recentJobs) ? market.recentJobs.filter(job => job?.status === 'TAKEN' && !job.isCompleted && !job.isExpired) : [];
+  const takenIds = new Set(taken.map(job => job.id).filter(Boolean));
+  return taken.length + market.jobs.filter(job => job && !job.isCompleted && !job.isExpired &&
+   !['FAILED','COMPLETED','EXPIRED'].includes(job.status) && (!job.id || !takenIds.has(job.id))).length;
+ }
  const error=code=>Object.assign(Error(code),{code});
  function create({api=root.chrome||root.browser,migration=root.Cor3CenterMigration,profile=root.Cor3CenterProfile,featureDefaults=root.Cor3CenterFeatureDefaults,expectedAccount=root.Cor3BrowserAccount?.accountId,nonce=()=>Array.from(root.crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,'0')).join(''),setTimer=setTimeout,clearTimer=clearTimeout}={}){
   let binding=null,epoch=0,closed=false,autoFlight=null,resolveFlight=null;const pending=new Map(),hooks=new Set(),boundHooks=new Set(),tabEpoch=new Map(),windowEpoch=new Map();
@@ -45,7 +52,8 @@
    }catch{if(isCurrent(b))revoke();return null;}finally{if(resolveFlight===flight)resolveFlight=null;}})();resolveFlight=flight;return flight.promise;
   }
   async function guard(tabId,fn,b=snapshot()){if(typeof fn!=='function'||!isCurrent(b)||b.tabId!==tabId)throw error('CENTER_BINDING_REVOKED');if(!await resolve()||!isCurrent(b))throw error('CENTER_BINDING_REVOKED');const v=await fn(Object.freeze({...b}));if(!await resolve()||!isCurrent(b))throw error('CENTER_BINDING_REVOKED');return v;}
-  async function admission(sender,documentId){const b=snapshot();if(!b||!HEX.test(documentId)||documentId!==b.documentId||sender?.id!==api.runtime.id||sender.frameId!==0||sender.tab?.id!==b.tabId||sender.tab.windowId!==b.windowId||sender.url!==b.url)return {allowed:false,snapshot:null};return await resolve()&&isCurrent(b)?{allowed:true,snapshot:b}:{allowed:false,snapshot:null};}
+  const matchesTopFrame=(sender,documentId,b)=>isCurrent(b)&&HEX.test(documentId)&&documentId===b.documentId&&sender?.id===api.runtime.id&&sender.frameId===0&&sender.tab?.id===b.tabId&&sender.tab.windowId===b.windowId&&sender.url===b.url;
+  async function admission(sender,documentId){const b=snapshot();if(!matchesTopFrame(sender,documentId,b))return {allowed:false,snapshot:null};return await resolve()&&isCurrent(b)?{allowed:true,snapshot:b}:{allowed:false,snapshot:null};}
   async function autoBind(windowId,sender){
    if(!popupSender(sender))throw error('CENTER_UI_REQUIRED');
    if(sender.tab&&(!Number.isSafeInteger(sender.tab.windowId)||sender.tab.windowId!==windowId))throw error('CENTER_WINDOW_UNAVAILABLE');
@@ -63,6 +71,10 @@
     await migration.apply(two.account,assertMigrationCurrent);await assertMigrationCurrent();check();
     if(profile)await profile.remember(two.account,assertMigrationCurrent);
     if(featureDefaults)await featureDefaults.apply(two.account,assertMigrationCurrent);
+    if(profile&&root.Cor3ExpeditionSaveRecovery){
+     try{await root.Cor3ExpeditionSaveRecovery.restore(two.account,assertMigrationCurrent);}
+     catch{root.console?.warn?.('COR3 Expedition save restore could not be confirmed');}
+    }
     await assertMigrationCurrent();check();
     binding=Object.freeze({windowId,tabId:a.tabId,accountId:two.account,documentId:two.documentId,url:a.url,epoch:++epoch});const result=snapshot();for(const f of boundHooks){try{Promise.resolve(f(result)).catch(()=>{})}catch{}}return {ok:true,tab:{...result,id:result.tabId}};
    })();autoFlight={windowId,promise};try{return await promise}finally{if(autoFlight?.promise===promise)autoFlight=null}
@@ -106,16 +118,25 @@
    verifyAccount(account);
    if(profile)await profile.verify(account,()=>check(account));
    const prefix = 'center:' + account + ':';
-   const keys = [...cacheSummaryKeys, ...marketSummaryKeys, 'expeditionsData', 'droneData', 'autoSendMerc', 'autoDrone',
+   const keys = [...cacheSummaryKeys, ...marketSummaryKeys.map(key=>key+'SummaryV1'), 'expeditionsData', 'droneData', 'autoSendMerc', 'autoDrone',
     'autoDailyHackEnabled','dailyOpsData','dailyHackDiagnostics','dailyHackNextCheckAt','sessionAuthDocumentId','sessionAuthReadyAt','networkRuntimeStatus','automationRunLogs'];
    const raw = await api.storage.local.get(keys.map(key => prefix + key));
+   const counts = {}, legacy = [];
+   for (const key of marketSummaryKeys) {
+    const count = raw[prefix + key + 'SummaryV1']?.activeJobsCount;
+    if (Number.isSafeInteger(count) && count >= 0) counts[key] = count;
+    else if (count !== null) legacy.push(key);
+   }
+   if (legacy.length) {
+    const rows = await api.storage.local.get(legacy.flatMap(key=>[prefix+key, prefix+key+'UpdatedAt']));
+    for (const key of legacy) {
+     const count = countActiveJobs(rows[prefix+key]);
+     if (count !== null) counts[key] = count;
+     raw[prefix+key+'UpdatedAt'] = rows[prefix+key+'UpdatedAt'];
+    }
+   }
    await check(account);
    const values = Object.fromEntries(cacheSummaryKeys.filter(key => Number.isFinite(raw[prefix + key])).map(key => [key, raw[prefix + key]]));
-   const counts = {};
-   for (const key of marketSummaryKeys) {
-    const market = raw[prefix + key],jobs=market?.jobs,taken=Array.isArray(market?.recentJobs)?market.recentJobs.filter(job=>job?.status==='TAKEN'&&!job.isCompleted&&!job.isExpired):[],takenIds=new Set(taken.map(job=>job.id).filter(Boolean));
-    if (Array.isArray(jobs)) counts[key] = taken.length+jobs.filter(job => job && !job.isCompleted && !job.isExpired && !['FAILED','COMPLETED','EXPIRED'].includes(job.status) && (!job.id||!takenIds.has(job.id))).length;
-   }
    const expeditions = raw[prefix + 'expeditionsData'];
    if (Array.isArray(expeditions)) counts.expeditionsData = expeditions.length;
    const drone = raw[prefix + 'droneData'];
@@ -187,9 +208,9 @@
   };
   api.runtime.onMessage.addListener(message);api.tabs.onUpdated.addListener(updated);api.tabs.onRemoved.addListener(removed);api.tabs.onCreated?.addListener(created);api.tabs.onAttached?.addListener(attached);api.tabs.onDetached?.addListener(detached);api.windows.onRemoved?.addListener(windowRemoved);
   api.tabs.onActivated?.addListener(activated);
-  return Object.freeze({snapshot,isCurrent,resolve,guard,revoke,admission,onBound(f){boundHooks.add(f);return()=>boundHooks.delete(f)},onRevoke(f){hooks.add(f);return()=>hooks.delete(f)},close(){if(closed)return;closed=true;revoke();api.runtime.onMessage.removeListener(message);api.tabs.onUpdated.removeListener(updated);api.tabs.onRemoved.removeListener(removed);api.tabs.onCreated?.removeListener(created);api.tabs.onAttached?.removeListener(attached);api.tabs.onDetached?.removeListener(detached);api.tabs.onActivated?.removeListener(activated);api.windows.onRemoved?.removeListener(windowRemoved)}});
+  return Object.freeze({snapshot,isCurrent,resolve,guard,revoke,admission,matchesTopFrame,onBound(f){boundHooks.add(f);return()=>boundHooks.delete(f)},onRevoke(f){hooks.add(f);return()=>hooks.delete(f)},close(){if(closed)return;closed=true;revoke();api.runtime.onMessage.removeListener(message);api.tabs.onUpdated.removeListener(updated);api.tabs.onRemoved.removeListener(removed);api.tabs.onCreated?.removeListener(created);api.tabs.onAttached?.removeListener(attached);api.tabs.onDetached?.removeListener(detached);api.tabs.onActivated?.removeListener(activated);api.windows.onRemoved?.removeListener(windowRemoved)}});
  }
- root.Cor3CenterBindingFactory=Object.freeze({create,safeUrl});if(root.chrome?.runtime?.onMessage||root.browser?.runtime?.onMessage)root.Cor3CenterBinding=create();
+ root.Cor3CenterBindingFactory=Object.freeze({create,safeUrl,countActiveJobs});if(root.chrome?.runtime?.onMessage||root.browser?.runtime?.onMessage)root.Cor3CenterBinding=create();
 })(globalThis);
 
 

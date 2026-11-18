@@ -7,7 +7,7 @@ function fixture(){
  const c=vm.createContext({structuredClone,Date:{now:()=>at},setTimeout,clearTimeout,window:w,location:{origin:'https://cor3.gg'},runtimeLog:null,jobBatchReceipt:null,autoJobTask:null,autoJobTaskStarted:false,
   Cor3CenterIdentity:{snapshot:()=>scope},Cor3Automation:{permitsRequest:()=>allowed,contentDocumentId:'local'},cor3AutomationAllowed:()=>allowed,networkScope:()=>scope,
   Cor3CenterStore:{get:async()=>({autoJobsLockedJobs:[]}),set:async x=>Object.assign(data,x)},ensureAntiAfkEnabled(){},setAutoJobsActive:x=>data.active=x,injectAutoJobSolver:async()=>{},setSeqRefreshRunning(){},
-  chrome:{runtime:{id:'fixture',getManifest:()=>({version:'2.1.0'}),onMessage:{addListener:f=>runtime.push(f)}}},Cor3InPageControlsFactory:{create:x=>x}});
+  chrome:{runtime:{id:'fixture',getManifest:()=>({version:'2.1.5'}),onMessage:{addListener:f=>runtime.push(f)}}},Cor3InPageControlsFactory:{create:x=>x}});
  vm.runInContext(src('run-log.js'),c);vm.runInContext(src('job-batch.js'),c);vm.runInContext(src('network-coordinator.js'),c);const network=c.Cor3NetworkCoordinator.create({scope:()=>scope,allowed:()=>allowed,blocked:()=>busy,now:()=>at});
  Object.assign(c,{network:()=>network,_automationEnqueue:(type,run)=>network.enqueue(type,run),getAutomationQueue:()=>network.snapshot().waiting,setAutomationQueue:rows=>network.keepWaiting(rows.map(x=>x.type))});
  const body=src('content.js');vm.runInContext(body.slice(body.indexOf('  function queueMarketRefresh('),body.indexOf('  // src/content/auto-update-markets.js')),c);

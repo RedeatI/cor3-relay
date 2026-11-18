@@ -3,7 +3,7 @@ import { join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { z } from 'zod';
-import { files, runtimeRoot, platforms } from './build.ts';
+import { files, runtimeRoot, platforms, releaseVersion } from './build.ts';
 
 const extension = join(runtimeRoot, 'extension');
 const inventory = z.record(z.string(), z.string().regex(/^[a-f0-9]{64}$/)).parse(
@@ -44,6 +44,6 @@ for (const path of files(runtimeRoot)) {
 
 for (const platform of platforms) {
     const manifest = JSON.parse(readFileSync(join(runtimeRoot, 'platforms', platform.toLowerCase() + '.json'), 'utf8'));
-    if (manifest.key || manifest.name !== 'COR3 Relay' || manifest.version !== '2.1.0') throw new Error(`Manifest identity: ${platform}`);
+    if (manifest.key || manifest.name !== 'COR3 Relay' || manifest.version !== releaseVersion || manifest.version_name !== releaseVersion + '-relay-' + platform.toLowerCase()) throw new Error(`Manifest identity: ${platform}`);
 }
 console.log(`Relay audit passed: ${actual.length} runtime files; syntax, integrity, synthetic IDs and release inputs checked.`);

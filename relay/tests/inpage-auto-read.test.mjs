@@ -3,7 +3,7 @@ const src=n=>readFileSync(new URL('../extension/'+n,import.meta.url),'utf8');
 function fixture(){
  let scope={accountId:'FREEL_FF000009-0009',documentId:'doc-one'},at=10000,allowed=true,respond=true;
  const data={autoSendMerc:{enabled:false},autoDrone:{enabled:false}},requests=[],writes=[];
- const c=vm.createContext({});for(const name of ['network-coordinator.js','inpage-controls-core.js'])vm.runInContext(src(name),c);
+ const c=vm.createContext({});for(const name of ['network-coordinator.js','job-batch.js','inpage-controls-core.js'])vm.runInContext(src(name),c);
  const network=c.Cor3NetworkCoordinator.create({scope:()=>scope,allowed:()=>allowed,now:()=>at});
  const store={get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).filter(k=>Object.hasOwn(data,k)).map(k=>[k,data[k]])),set:async x=>writes.push(x),update:async(...x)=>writes.push(x)};
  const dispatch=async r=>{requests.push(r);if(!respond)return {success:true};at++;
@@ -14,7 +14,7 @@ function fixture(){
   if(r.action==='requestExpeditionConfig')data.expeditionConfigData={locations:[]};
   if(r.action==='requestDroneOptions'){data.droneData={drone:null};data.droneDataUpdatedAt=at;}
   if(r.action==='fetchDailyOps'){data.dailyOpsData={claimed:true};data.dailyOpsUpdatedAt=at;}
-  if(r.action==='refreshAllMarketsSeq')for(const k of ['marketDataUpdatedAt','darkMarketDataUpdatedAt','soyuzMarketDataUpdatedAt','usolMarketDataUpdatedAt'])data[k]=at;
+  if(r.action==='refreshAllMarketsSeq'){for(const k of ['marketDataUpdatedAt','darkMarketDataUpdatedAt','soyuzMarketDataUpdatedAt','usolMarketDataUpdatedAt'])data[k]=at;for(const k of ['marketDataSummaryV1','darkMarketDataSummaryV1','soyuzMarketDataSummaryV1','usolMarketDataSummaryV1'])if(data[k])data[k].nextJobsResetAt=new Date(at+3600000).toISOString();}
   return {success:true};};
  const client=c.Cor3InPageControlsFactory.create({identity:{snapshot:()=>scope},admit:async()=>({allowed:true,snapshot:scope}),allowed:()=>allowed,store,dispatch,enqueue:(type,run)=>network.enqueue(type,run),queue:()=>network.snapshot(),now:()=>at});
  return {client,network,data,requests,writes,scope:()=>scope,advance:ms=>at+=ms,pause:()=>allowed=false,change:()=>scope={accountId:'FREEL_FF00000A-000A',documentId:'doc-two'},noResponse:()=>respond=false};
@@ -31,8 +31,16 @@ test('automatic reads wait behind initial fetch and other active or queued work 
 });
 test('fresh data from initial fetch and rapid reopen are reused without duplicate requests',async()=>{
  const f=fixture();await complete(f);const count=f.requests.length;assert.equal((await complete(f,2)).phase,'complete');assert.equal(f.requests.length,count);
- f.advance(31000);assert.equal((await f.client.autoRead(f.scope(),3)).kind,'loadout');assert.equal(f.requests.length,count+1);
+ f.advance(31000);assert.equal((await complete(f,3)).phase,'complete');assert.equal(f.requests.length,count);f.advance(269000);assert.equal((await f.client.autoRead(f.scope(),4)).kind,'loadout');assert.equal(f.requests.length,count+1);
 });
+
+test('a minute-old reopen refreshes expedition and drone data while retaining five-minute loadout and Daily',async()=>{const f=fixture();await complete(f);const before=f.requests.length;f.advance(61000);const result=await complete(f,2);assert.equal(result.phase,'complete');assert.deepEqual(f.requests.slice(before).map(x=>x.action),['requestExpeditions','requestMercenaries','requestUsolMercenaries','requestExpeditionConfig','requestDroneOptions']);});
+
+test('manual refresh bypasses fresh cache and read-only polling does not issue game requests',async()=>{const f=fixture();await complete(f);const before=f.requests.length;await f.client.read(f.scope());await f.client.read(f.scope());assert.equal(f.requests.length,before);await f.client.refresh('loadout',f.scope());assert.equal(f.requests.length,before+1);assert.equal(f.requests.at(-1).action,'requestLoadout');});
+
+test('a real market deadline expires cache even within thirty seconds without expiring other kinds',async()=>{const f=fixture();f.data.marketDataSummaryV1={nextJobsResetAt:new Date(25000).toISOString()};await complete(f);f.data.marketDataSummaryV1.nextJobsResetAt=new Date(25000).toISOString();const fresh=await complete(f,2);assert.equal(fresh.freshUntil,25000);const before=f.requests.length;f.advance(15000);await complete(f,3);assert.deepEqual(f.requests.slice(before).map(x=>x.action),['refreshAllMarketsSeq']);});
+
+test('one expired section does not renew other sections by observation alone',async()=>{const f=fixture();await complete(f);const loadoutAt=f.data.loadoutUpdatedAt;f.advance(61000);const result=await complete(f,2);assert.equal(f.data.loadoutUpdatedAt,loadoutAt);assert.ok(result.freshUntil<=f.data.droneDataUpdatedAt+60000);f.advance(239000);assert.equal((await f.client.autoRead(f.scope(),3)).kind,'loadout');});
 test('pending reads are coalesced across polling and reopening and lack of response is reported as partial',async()=>{
  const f=fixture();f.noResponse();await f.client.autoRead(f.scope(),1);
  await Promise.all([f.client.autoRead(f.scope(),1),f.client.autoRead(f.scope(),1)]);await f.client.autoRead(f.scope(),2);

@@ -3,7 +3,9 @@
  if(root.window.top!==root.window||root.Cor3CenterIdentity)return;
  const api=root.chrome||root.browser,selector='[data-component-name="UserIdentityUserNameText"]';
  const nonce=()=>Array.from(root.crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,'0')).join('');
- let documentId=null,last=null,hard=false,observedIdentity=null;
+ const clock=()=>root.performance?.now?.()??Date.now();
+ const stableCheckMs=60000,unreadyCheckMs=15000,firstRetryMs=2000,maxRetryMs=30000;
+ let documentId=null,last=null,hard=false,observedIdentity=null,scanTimer=null;
  const bad=(code,count=0)=>({code,count});
  function inspect(){try{
   if(hard)return bad('CENTER_IDENTITY_REVOKED');
@@ -16,28 +18,43 @@
   const account=el.textContent.trim();if(!/^FREEL_[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}$/.test(account))return bad('CENTER_IDENTITY_FORMAT',1);
   return {account,url:u.href};
  }catch{return bad('CENTER_IDENTITY_UNAVAILABLE')}}
- function invalidate(){++noticeSequence;announced=null;connection={code:'CENTER_ACCOUNT_NOT_READY'};const old=documentId;documentId=null;last=null;if(old)try{Promise.resolve(api.runtime.sendMessage({type:'cor3-center-revoked',documentId:old})).catch(()=>{})}catch{}}
- function refresh(){const current=inspect();if(current.code){invalidate();return current;}if(last&&(last.account!==current.account||last.url!==current.url))invalidate();if(!documentId)documentId=nonce();last=current;return {...current,documentId};}
- let announced=null, announcementFlight=false, nextAttempt=0, noticeSequence=0, reconnectRequested=false;
+ function invalidate(code='CENTER_ACCOUNT_NOT_READY'){
+  connection={code};const old=documentId;if(!old)return;
+  ++noticeSequence;announced=null;documentId=null;last=null;resetRetry();schedule();
+  try{Promise.resolve(api.runtime.sendMessage({type:'cor3-center-revoked',documentId:old})).catch(()=>{})}catch{}
+ }
+ function refresh(){const current=inspect();if(current.code){invalidate(current.code);return current;}if(last&&(last.account!==current.account||last.url!==current.url))invalidate();if(!documentId){documentId=nonce();schedule();}last=current;return {...current,documentId};}
+ let announced=null, announcementFlight=false, nextAttempt=0, retryMs=firstRetryMs, noticeSequence=0, reconnectRequested=false;
  let connection={code:'CENTER_ACCOUNT_NOT_READY'};
- function announce(current,force=false){
-  if(current.code||announcementFlight||(!force&&current.documentId===announced)||Date.now()<nextAttempt)return;
+ function resetRetry(){nextAttempt=0;retryMs=firstRetryMs;}
+ function schedule(){
+  clearTimeout(scanTimer);scanTimer=null;
+  if(hard||announcementFlight)return;
+  const delay=!documentId?unreadyCheckMs:documentId===announced?stableCheckMs:Math.max(0,nextAttempt-clock());
+  scanTimer=setTimeout(()=>{scanTimer=null;check();},delay);scanTimer?.unref?.();
+ }
+ function retry(){nextAttempt=clock()+retryMs;retryMs=Math.min(maxRetryMs,retryMs*2);}
+ function announce(current){
+  if(current.code||announcementFlight||current.documentId===announced||clock()<nextAttempt)return;
   const sequence=++noticeSequence, id=current.documentId;
+  let deadline;
   announcementFlight=true;
-  Promise.resolve().then(()=>api.runtime.sendMessage({type:'cor3-center-page-ready',documentId:id})).then(result=>{
+  const request=Promise.resolve().then(()=>api.runtime.sendMessage({type:'cor3-center-page-ready',documentId:id}));
+  const timeout=new Promise(resolve=>{deadline=setTimeout(()=>resolve({ok:false,code:'CENTER_PROBE_TIMEOUT'}),10000);});
+  Promise.race([request,timeout]).then(result=>{
    if(sequence!==noticeSequence||hard)return;
    connection={code:result?.ok?'CENTER_CONNECTED':result?.code||'CENTER_RECEIVER_UNAVAILABLE'};
-   if(result?.ok)announced=id;
-   nextAttempt=Date.now()+2000;
+   if(result?.ok){announced=id;resetRetry();}else retry();
   },()=>{
-   if(sequence===noticeSequence)connection={code:'CENTER_RECEIVER_UNAVAILABLE'};
-   nextAttempt=Date.now()+2000;
-  }).finally(()=>{announcementFlight=false;if(reconnectRequested){reconnectRequested=false;announced=null;nextAttempt=0;check();}});
+   if(sequence===noticeSequence&&!hard){connection={code:'CENTER_RECEIVER_UNAVAILABLE'};retry();}
+  }).finally(()=>{clearTimeout(deadline);announcementFlight=false;if(reconnectRequested&&!hard){reconnectRequested=false;announced=null;resetRetry();check();}else schedule();});
  }
- function check(){if(!hard)announce(refresh())}
- function revoke(){if(hard)return;hard=true;invalidate();observer.disconnect();clearInterval(timer)}
+ function check(){if(!hard){announce(refresh());schedule();}}
+ function reconnect(){announced=null;resetRetry();if(announcementFlight)reconnectRequested=true;else check();}
+ function visible(){if(!root.document.hidden)check();}
+ function revoke(){if(hard)return;hard=true;invalidate();observer.disconnect();schedule();root.document.removeEventListener?.('visibilitychange',visible);}
  const listener=(m,sender)=>{
-  if(sender?.id===api.runtime.id&&!sender.tab&&m?.type==='cor3-center-page-active'&&!hard){announced=null;nextAttempt=0;if(announcementFlight)reconnectRequested=true;else announce(refresh(),true);return;}
+  if(sender?.id===api.runtime.id&&!sender.tab&&m?.type==='cor3-center-page-active'&&!hard){reconnect();return;}
   if(sender?.id!==api.runtime.id||sender.tab||!m||Object.keys(m).sort().join('|')!=='nonce|type'||m.type!=='cor3-center-probe'||typeof m.nonce!=='string'||!/^[a-f0-9]{32}$/.test(m.nonce))return;
   const current=refresh();
   const reply=current.code?{type:'cor3-center-diagnostic',nonce:m.nonce,code:current.code,count:current.count}:{type:'cor3-center-observation',nonce:m.nonce,account:current.account,documentId:current.documentId,url:current.url};
@@ -55,9 +72,10 @@
  }
  const observer=new root.MutationObserver(records=>{if(identityAffected(records))check();});observer.observe(root.document.documentElement,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['hidden','aria-hidden','inert','style','class','data-component-name']});
  api.storage?.onChanged?.addListener((changes,area)=>{
-  if(!hard&&area==='local'&&changes.cor3CenterRuntimeEpoch){announced=null;nextAttempt=0;announce(refresh(),true);}
+  if(!hard&&area==='local'&&changes.cor3CenterRuntimeEpoch)reconnect();
  });
- const timer=setInterval(check,500);api.runtime.onMessage.addListener(listener);for(const e of ['pagehide','popstate','hashchange'])root.addEventListener(e,revoke,{once:true});
+ api.runtime.onMessage.addListener(listener);for(const e of ['pagehide','popstate','hashchange'])root.addEventListener(e,revoke,{once:true});
+ root.addEventListener('focus',check);root.addEventListener('pageshow',check);root.document.addEventListener?.('visibilitychange',visible);
  root.Cor3CenterIdentity=Object.freeze({status:()=>({...connection}),snapshot(){const current=refresh();return current.code?null:Object.freeze({accountId:current.account,documentId:current.documentId,url:current.url});}});
  check();
 })(globalThis);

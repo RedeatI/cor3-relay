@@ -6,3 +6,13 @@ test('actual store serializes overlapping writes and reads see the final values'
 test('atomic nested settings patches preserve fields from concurrent popup/background updates',async()=>{const f=fixture();await f.store.set({autoDrone:{enabled:true,priority:['a']}});await Promise.all([f.store.update('autoDrone',{paused:true}),f.store.update('autoDrone',{repairEnabled:true})]);const cfg=(await f.store.get('autoDrone')).autoDrone;assert.equal(cfg.enabled,true);assert.equal(cfg.paused,true);assert.equal(cfg.repairEnabled,true);assert.equal(cfg.priority[0],'a');});
 test('failed writes do not poison the queue, and reserved keys remain rejected',async()=>{const f=fixture();f.fail();await assert.rejects(f.store.set({panelOpen:true}));await f.store.set({autoDailyHackEnabled:false});assert.equal((await f.store.get('autoDailyHackEnabled')).autoDailyHackEnabled,false);for(const key of ['helperMode','center:other:key'])await assert.rejects(f.store.update(key,{enabled:true}));});
 test('queued old-document mutations cannot spill into the next account',async()=>{const f=fixture(),release=f.hold();const first=f.store.set({panelOpen:true}),second=f.store.set({autoDailyHackEnabled:false});await flush();f.revoke();release();await assert.rejects(first);await assert.rejects(second);assert.equal(f.writes.length,1);assert.ok(!Object.keys(f.data).some(k=>k.includes('22222222')));});
+test('a lost read reply expires the shared flight and allows a fresh read without replaying writes',async()=>{
+ const calls=[],timers=new Map();let serial=0;
+ const c=vm.createContext({setTimeout:(fn,ms)=>{assert.equal(ms,10000);timers.set(++serial,fn);return serial;},clearTimeout:id=>timers.delete(id),chrome:{runtime:{sendMessage:m=>new Promise(resolve=>calls.push({m,resolve}))},storage:{local:{},onChanged:{addListener(){}}}}});
+ vm.runInContext(source,c);const store=c.Cor3CenterStore;
+ const a=assert.rejects(store.get(['one','two']),/CENTER_STORE_TIMEOUT/),b=assert.rejects(store.get(['two','one']),/CENTER_STORE_TIMEOUT/);
+ assert.equal(calls.length,1);timers.values().next().value();await Promise.all([a,b]);
+ const retry=store.get(['one','two']);assert.equal(calls.length,2);calls[1].resolve({ok:true,value:{one:'latest'}});
+ assert.equal((await retry).one,'latest');calls[0].resolve({ok:true,value:{one:'stale'}});await flush();assert.equal(timers.size,0);
+ const write=store.set({one:true});assert.equal(timers.size,0);assert.equal(calls.filter(x=>x.m.op==='set').length,1);calls[2].resolve({ok:true,value:{}});await write;
+});

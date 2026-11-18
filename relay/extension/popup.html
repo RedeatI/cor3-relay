@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <link rel="stylesheet" href="popup.css">
 </head>
-<body><p id="centerVersion" style="font-size:12px;font-weight:bold">COR3 Relay · Chrome 2.1.0</p><p id="centerConnectionStatus" role="status">正在连接当前游戏页面（三个解密功能无需账号探测）…</p>
+<body><p id="centerVersion" style="font-size:12px;font-weight:bold">COR3 Relay · Chrome 2.2.0</p><p id="centerConnectionStatus" role="status">正在连接当前游戏页面（三个解密功能无需账号探测）…</p>
 <details><summary>其他功能账号核验</summary><p id="centerAccountStatus" role="status">其他功能单独核验，不阻挡三个解密开关。</p></details>
 <!-- Main View -->
 <div id="mainView">
@@ -13,12 +13,7 @@
         <div class="header-btns">
             <button class="header-icon-btn" id="sidePanelBtn" title="Open as side panel"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg></button>
             <button class="header-icon-btn" id="refreshAllBtn" title="Refresh all data">🔄</button>
-            <button class="header-icon-btn" id="langToggleBtn" title="Language">🌐</button>
             <button class="header-icon-btn" id="themeToggleBtn" title="Change theme">🎨</button>
-        </div>
-        <div class="theme-dropdown" id="langDropdown">
-            <div class="theme-option active" data-lang="en">English</div>
-            <div class="theme-option" data-lang="zh">简体中文</div>
         </div>
         <div class="theme-dropdown" id="themeDropdown">
             <div class="theme-option active" data-theme="default"><span class="theme-swatch" style="background:#0a0e1a;border:1px solid #22283b;"></span> Default</div>
@@ -936,10 +931,19 @@
     <details id="runtimeStatus"><summary>运行状态</summary><pre id="runtimeStatusText" style="white-space:pre-wrap;font:11px/1.5 system-ui">未读取</pre></details>
     <div id="status">Status: Ready</div>
 
+    <div id="uiLanguageSettings" class="ui-language-settings">
+        <span id="uiLanguageLabel">语言</span>
+        <div class="ui-language-options" role="group" aria-labelledby="uiLanguageLabel">
+            <button type="button" data-ui-language="zh" data-language-raw lang="zh-CN" aria-label="简体中文" title="简体中文" aria-pressed="false">CN</button>
+            <button type="button" data-ui-language="en" data-language-raw lang="en" aria-label="English" title="English" aria-pressed="false">EN</button>
+        </div>
+        <p id="uiLanguageNotice" role="status" hidden></p>
+    </div>
+
 </div><!-- end mainView -->
 
 
-<script src="center-store.js"></script><script src="center-ui.js"></script>
+<script src="ui-language.js"></script><script src="center-store.js"></script><script src="center-ui.js"></script>
 <script src="run-log.js"></script>
 <script src="console-logger.js"></script>
 <script src="errors.js"></script>

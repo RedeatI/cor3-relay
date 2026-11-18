@@ -8,7 +8,7 @@
     return pending;
   }
   // src/popup/i18n.js
-  var _lang = "en";
+  var _lang = globalThis.Cor3UiLanguage?.get() || "en";
   var _listeners = /* @__PURE__ */ new Set();
   var _observer = null;
   var _translating = false;
@@ -150,7 +150,7 @@
     "\u{1F916} Auto Job Solver": "\u{1F916} \u81EA\u52A8\u4EFB\u52A1\u6C42\u89E3\u5668",
     "\u25B6 Start Auto Jobs": "\u25B6 \u5F00\u59CB\u81EA\u52A8\u4EFB\u52A1",
     "\u25A0 Stop Auto Jobs": "\u25A0 \u505C\u6B62\u81EA\u52A8\u4EFB\u52A1",
-    "\u{1F504} Auto Finish All Jobs": "\u{1F504} \u81EA\u52A8\u5B8C\u6210\u6240\u6709\u5DE5\u4F5C",
+    "\u{1F504} Auto Finish All Jobs": "\u{1F504} \u81ea\u52a8\u5b8c\u6210\u6240\u6709\u4efb\u52a1",
     "\u{1F3AF} Auto Finish All \u2014 Job Types": "\u{1F3AF} \u81EA\u52A8\u5B8C\u6210 \u2014 \u4EFB\u52A1\u7C7B\u578B",
     "Select All Types": "\u5168\u9009\u7C7B\u578B",
     "Only new market jobs are filtered; taken jobs always run. No selection = all types.": "\u4EC5\u7B5B\u9009\u5E02\u573A\u65B0\u4EFB\u52A1\uFF0C\u5DF2\u63A5\u4EFB\u52A1\u7167\u5E38\u5B8C\u6210\uFF1B\u672A\u52FE\u9009\u4EFB\u4F55\u7C7B\u578B\u65F6\u6309\u5168\u90E8\u7C7B\u578B\u6267\u884C\u3002",
@@ -369,6 +369,7 @@
   }
   function applyLangUi() {
     document.documentElement.lang = _lang === "zh" ? "zh-CN" : "en";
+    if(globalThis.Cor3UiLanguage){_listeners.forEach(fn=>{try{fn(_lang);}catch{}});return;}
     const btn = document.getElementById("langToggleBtn");
     if (btn) btn.title = t("Language", "\u8BED\u8A00");
     document.querySelectorAll("#langDropdown .theme-option").forEach((opt) => {
@@ -384,6 +385,7 @@
     });
   }
   async function setLang(lang) {
+    if(globalThis.Cor3UiLanguage)return globalThis.Cor3UiLanguage.set(lang);
     _lang = lang === "zh" ? "zh" : "en";
     await Cor3CenterStore.set({ uiLang: _lang });
     applyLangUi();
@@ -408,6 +410,7 @@
     document.addEventListener("click", () => dropdown.classList.remove("open"));
   }
   function init() {
+    if(globalThis.Cor3UiLanguage){const service=globalThis.Cor3UiLanguage;const sync=()=>{_lang=service.get();applyLangUi();};service.onChanged(sync);void service.ready.then(sync);sync();return;}
     setupLanguageDropdown();
     installObserver();
     Cor3CenterStore.get("uiLang", (data) => {
@@ -6954,10 +6957,10 @@
   });
 
   // src/popup/fork-config.js
-  var FORK_REPO = "SaltApocalypse/cor3-helper";
+  var FORK_REPO = "RedeatI/cor3-relay";
   var FORK_REPO_URL = `https://github.com/${FORK_REPO}`;
   var FORK_RELEASES_URL = `${FORK_REPO_URL}/releases`;
-  var FORK_DISPLAY_NAME = "Salta fork";
+  var FORK_DISPLAY_NAME = "COR3 Relay";
   var UPSTREAM_REPO = "Femtoce11/cor3-helper";
   var UPSTREAM_URL = `https://github.com/${UPSTREAM_REPO}`;
 

@@ -9,15 +9,13 @@
  const enabledDefaults=Object.freeze(['autoDecryptEnabled','autoIceWallEnabled','autoSimpleDecryptEnabled','autoUpdateMarkets','autoDailyHackEnabled','autoRunMarketJobsEnabled']);
  const marketKeys=['marketData','darkMarketData','soyuzMarketData','usolMarketData'];
  const summarySources=Object.fromEntries(marketKeys.map(k=>[k+'SummaryV1',k]));
- const summarize=value=>value&&typeof value==='object'?{nextJobsResetAt:typeof value.nextJobsResetAt==='string'?value.nextJobsResetAt:null,jobsCount:Array.isArray(value.jobs)?value.jobs.length:0,recentJobsCount:Array.isArray(value.recentJobs)?value.recentJobs.length:0}:undefined;
+ const summarize=value=>value&&typeof value==='object'?{activeJobsCount:root.Cor3CenterBindingFactory?.countActiveJobs(value),nextJobsResetAt:typeof value.nextJobsResetAt==='string'?value.nextJobsResetAt:null,jobsCount:Array.isArray(value.jobs)?value.jobs.length:0,recentJobsCount:Array.isArray(value.recentJobs)?value.recentJobs.length:0}:undefined;
  let summaryGeneration=null,summaryRevision=0;const legacySummaries=new Map();
  async function dispatch(op,value,sender,documentId,uiBinding){
-  const binding=root.Cor3CenterBinding,internal=sender===undefined,expected=binding.snapshot();
-    if(!internal&&privileged(sender)&&!binding.isCurrent(uiBinding))throw Error('CENTER_UI_REOPEN_REQUIRED');
+  const binding=root.Cor3CenterBinding,internal=sender===undefined,expected=binding.snapshot(),ui=privileged(sender);
+  if(ui&&!binding.isCurrent(uiBinding))throw Error('CENTER_UI_REOPEN_REQUIRED');
   let child=false;
-  if(!internal&&!privileged(sender)){
-   const admitted=await binding.admission(sender,documentId);
-   if(admitted?.allowed!==true){
+  if(!internal&&!ui&&!binding.matchesTopFrame(sender,documentId,expected)){
     let u;try{u=new URL(sender?.url)}catch{}
     if(!expected||sender?.id!==api.runtime.id||sender.tab?.id!==expected.tabId||!Number.isSafeInteger(sender.frameId)||sender.frameId<=0||!u||u.protocol!=='https:'||u.hostname!=='svc-corie.cor3.gg'||!u.pathname.startsWith('/games/simple-hack')||u.port||u.username||u.password||!/^[a-f0-9]{32}$/.test(documentId))throw Error('CENTER_STORE_UNBOUND');
     const frames=await api.scripting.executeScript({target:{tabId:expected.tabId,frameIds:[sender.frameId]},func:()=>globalThis.Cor3Automation?.contentDocumentId});
@@ -25,15 +23,18 @@
     const keys=typeof value==='string'?[value]:Array.isArray(value)?value:value&&typeof value==='object'?Object.keys(value):[];
     if(op!=='scope'&&(keys.length===0||keys.some(k=>!['autoSimpleDecryptEnabled','simpleDecryptSolverStatus'].includes(k))))throw Error('CENTER_STORE_UNBOUND');
     child=true;
-   }
   }
-  const b=await binding.resolve();
-  if(op==='get'&&value===helper)return raw.get(helper);
-  if(!b||!binding.isCurrent(expected))throw Error('CENTER_STORE_UNBOUND');
-  if(op==='scope')return {accountId:b.accountId};
+  const helperRead=op==='get'&&value===helper;
+  if(internal&&helperRead)return raw.get(helper);
+  if(!expected||!binding.isCurrent(expected))throw Error('CENTER_STORE_UNBOUND');
+  if(op==='scope'){
+   if(!await binding.resolve()||!binding.isCurrent(expected))throw Error('CENTER_STORE_UNBOUND');
+   return {accountId:expected.accountId};
+  }
+  const b=expected;
   const prefix='center:'+b.accountId+':';
   const verifyChild=async()=>{if(!child)return;const f=await api.scripting.executeScript({target:{tabId:expected.tabId,frameIds:[sender.frameId]},func:()=>globalThis.Cor3Automation?.contentDocumentId});if(f?.length!==1||f[0].frameId!==sender.frameId||f[0].result!==documentId||!binding.isCurrent(expected))throw Error('CENTER_STORE_UNBOUND');};
-  const execute=()=>binding.guard(b.id,async()=>{await verifyChild();
+  const execute=()=>binding.guard(b.tabId,async()=>{await verifyChild();
    if(op==='get'){
     const keys=value===null||value===undefined?null:typeof value==='string'?[value]:Array.isArray(value)?value:Object.keys(value);
     if(keys&&(!keys.every(validKey)||keys.length>1000))throw Error('CENTER_STORE_KEYS');
@@ -49,7 +50,9 @@
     const pk=prefix+value.key,stored=(await raw.get(pk))[pk];
     if(!binding.isCurrent(expected))throw Error('CENTER_STORE_UNBOUND');
     const next={...(stored&&typeof stored==='object'&&!Array.isArray(stored)?stored:{}),...value.patch};
-    await raw.set({[pk]:next});return next;
+    const patch = {[pk]:next};
+    if (marketKeys.includes(value.key)) patch[pk+'SummaryV1'] = summarize(next);
+    await raw.set(patch);return next;
    }
    if(op==='set'){
     if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length>1000||!Object.keys(value).every(k=>validKey(k)&&k!==helper))throw Error('CENTER_STORE_KEYS');
@@ -58,25 +61,42 @@
    }
    if(op==='remove'){const keys=typeof value==='string'?[value]:value;if(!Array.isArray(keys)||!keys.every(k=>validKey(k)&&k!==helper))throw Error('CENTER_STORE_KEYS');const all=[...keys,...keys.filter(k=>marketKeys.includes(k)).map(k=>k+'SummaryV1')];await raw.remove(all.map(k=>prefix+k));return {};}
    throw Error('CENTER_STORE_OPERATION');
-  },expected);const result=await (op==='get'||op==='scope'?writeTail.then(execute,execute):serialize(execute));await verifyChild();return result;
+  },expected);const result=await (op==='get'?writeTail.then(execute,execute):serialize(execute));await verifyChild();return result;
  }
  if(root.Cor3CenterBinding)api.runtime.onMessage.addListener((m,sender,respond)=>{if(m?.type!=='cor3-center-store')return;dispatch(m.op,m.value,sender,m.documentId,m.expectedBinding).then(value=>respond({ok:true,value}),()=>respond({ok:false,code:'CENTER_STORE_UNAVAILABLE'}));return true;});
- async function invoke(op,value){if(root.Cor3CenterBinding)return dispatch(op,value);const expectedBinding=root.Cor3CenterUi?await root.Cor3CenterUi.binding():undefined;const r=await api.runtime.sendMessage({type:'cor3-center-store',op,value,documentId:root.Cor3CenterIdentity?.snapshot()?.documentId||root.Cor3Automation?.contentDocumentId,expectedBinding});if(root.Cor3CenterUi)await root.Cor3CenterUi.binding();if(!r?.ok)throw Error('CENTER_STORE_UNAVAILABLE');return r.value;}
+ async function invoke(op,value){
+  if(root.Cor3CenterBinding)return dispatch(op,value);
+  const ui=root.Cor3CenterUi,expectedBinding=ui?await ui.pinnedBinding():undefined;
+  const r=await api.runtime.sendMessage({type:'cor3-center-store',op,value,documentId:root.Cor3CenterIdentity?.snapshot()?.documentId||root.Cor3Automation?.contentDocumentId,expectedBinding});
+  if(ui)await ui.binding();
+  if(!r?.ok)throw Error('CENTER_STORE_UNAVAILABLE');
+  return r.value;
+ }
+ function readOnly(op,value){
+  const request=invoke(op,value);
+  if(root.Cor3CenterBinding)return request;
+  let timer;
+  const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('CENTER_STORE_TIMEOUT')),10000);});
+  return Promise.race([request,deadline]).finally(()=>clearTimeout(timer));
+ }
  let revision=0;const reads=new Map(),listeners=new Set();
  const copy=value=>value===undefined?value:typeof root.structuredClone==='function'?root.structuredClone(value):JSON.parse(JSON.stringify(value));
  const context=()=>{const s=root.Cor3CenterBinding?.snapshot()||root.Cor3CenterIdentity?.snapshot();return JSON.stringify([s?.id,s?.accountId,s?.documentId,s?.epoch,root.Cor3Automation?.contentDocumentId]);};
  function call(op,value,callback){
   let p;
-  if(op==='get'&&(typeof value==='string'||Array.isArray(value)&&value.every(k=>typeof k==='string'))){const key=context()+':'+revision+':'+(typeof value==='string'?'string':'array')+':'+JSON.stringify([...new Set(typeof value==='string'?[value]:value)].sort());let shared=reads.get(key);if(!shared){shared=invoke(op,value);reads.set(key,shared);shared.finally(()=>{if(reads.get(key)===shared)reads.delete(key);}).catch(()=>{});}p=shared.then(copy);}
-  else{if(op!=='get'){++revision;reads.clear();}p=invoke(op,value);}
+  if(op==='get'&&(typeof value==='string'||Array.isArray(value)&&value.every(k=>typeof k==='string'))){const key=context()+':'+revision+':'+(typeof value==='string'?'string':'array')+':'+JSON.stringify([...new Set(typeof value==='string'?[value]:value)].sort());let shared=reads.get(key);if(!shared){shared=readOnly(op,value);reads.set(key,shared);shared.finally(()=>{if(reads.get(key)===shared)reads.delete(key);}).catch(()=>{});}p=shared.then(copy);}
+  else if(op==='get')p=readOnly(op,value);
+  else{++revision;reads.clear();p=invoke(op,value);}
   p.catch(()=>{});if(typeof callback==='function')p.then(callback,()=>callback(op==='get'?{}:undefined)).catch(()=>{});return p;
  }
  const events={addListener(fn){if(typeof fn==='function')listeners.add(fn);},removeListener(fn){listeners.delete(fn);}};
  api.storage.onChanged.addListener(async(changes,area)=>{
-  if(area!=='local')return;++revision;reads.clear();if(Object.keys(changes).some(k=>marketKeys.some(m=>k.endsWith(':'+m)||k.endsWith(':'+m+'SummaryV1')))){++summaryRevision;legacySummaries.clear();}if(!listeners.size)return;
-  const keys=Object.keys(changes);if(!keys.some(k=>k===helper||k.startsWith('center:')))return;
+  if(area!=='local')return;
+  const keys=Object.keys(changes), localScope=root.Cor3CenterBinding?.snapshot()||root.Cor3CenterIdentity?.snapshot();
+  if(!keys.some(k=>k===helper||k.startsWith(localScope?.accountId?'center:'+localScope.accountId+':':'center:')))return;
+  ++revision;reads.clear();if(Object.keys(changes).some(k=>marketKeys.some(m=>k.endsWith(':'+m)||k.endsWith(':'+m+'SummaryV1')))){++summaryRevision;legacySummaries.clear();}if(!listeners.size)return;
   const stamp=context();let mapped={};
-  try{const scope=await invoke('scope');if(stamp!==context())return;const prefix='center:'+scope.accountId+':';for(const[k,v]of Object.entries(changes))if(k.startsWith(prefix))mapped[k.slice(prefix.length)]=v;else if(k===helper)mapped[k]=v;}
+  try{const scope=await readOnly('scope');if(stamp!==context())return;const prefix='center:'+scope.accountId+':';for(const[k,v]of Object.entries(changes))if(k.startsWith(prefix))mapped[k.slice(prefix.length)]=v;else if(k===helper)mapped[k]=v;}
   catch{if(changes[helper])mapped[helper]=changes[helper];}
   if(!Object.keys(mapped).length)return;for(const fn of [...listeners])if(listeners.has(fn))try{fn(copy(mapped),'local');}catch{}
  });
