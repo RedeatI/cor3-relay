@@ -458,6 +458,8 @@ IP 清理|IP Cleanup
 最近读数|Last reading
 运行日志|Runtime logs
 正在连接当前游戏页面（三个解密功能无需账号探测）…|Connecting to the current game page (puzzle solvers do not need account identification)…
+已识别当前窗口账号：|Account in this window:\x20
+。功能状态遵循此账号的已保存设置。|. Saved settings for this account apply.
 其他功能账号核验|Account verification for other features
 其他功能单独核验，不阻挡三个解密开关。|Other features verify the account separately; puzzle toggles remain independent.
 （超时，等待结束确认）|(timed out; waiting for completion)

@@ -1,7 +1,7 @@
 # Relay 2.2.0 validation
 
 Verified locally on Windows with Node 24.14.1. The Chrome and Edge builds each
-passed 559 regression tests. The separate upstream reference passed 448 tests
+passed 561 regression tests. The separate upstream reference passed 448 tests
 across 93 files. Both projects passed type checking and lint, and both builds
 completed. The public runtime inventory covers 81 files per browser.
 
@@ -21,6 +21,10 @@ completed. The public runtime inventory covers 81 files per browser.
   C3 controls and toolbar markup ran with synthetic data. Switching CN/EN and
   opening Tasks, Operations and Status produced the expected labels and no panel
   overflow, page errors or game actions. Closing C3 collapsed the panel.
+- In isolated Chrome and Edge windows, the toolbar connection message, account
+  section heading and account status all switched together. The English setting
+  survived reopening and a new status message. Selecting Chinese restored all
+  three labels. The test used a synthetic account and browser language settings.
 
 The real game, credentials, rewards, long-duration outages and OS sleep were
 outside this offline acceptance run. No GitHub Actions result is claimed.

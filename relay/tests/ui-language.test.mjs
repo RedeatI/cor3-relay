@@ -21,3 +21,22 @@ test('unchanged live values cause one DOM text write and remain reversible after
 test('live text and newly appended logs stay reversible across repeated language switches',async()=>{const f=fixture(),text=textNode('本轮已加入队列，进度会自动更新'),root={nodeType:11,childNodes:[text]};await f.language.ready;f.language.observe(root);await f.language.set('en');assert.equal(text.nodeValue,'Batch queued. Progress updates automatically.');text.nodeValue='终端参数已核对并提交一次';f.observers[0].callback([{type:'characterData',target:text}]);assert.equal(text.nodeValue,'Terminal parameters checked and submitted once');await f.language.set('zh');assert.equal(text.nodeValue,'终端参数已核对并提交一次');await f.language.set('en');assert.equal(text.nodeValue,'Terminal parameters checked and submitted once');f.observers[0].callback([{type:'characterData',target:text}]);assert.equal(text.nodeValue,'Terminal parameters checked and submitted once');});
 test('language entry exists only as the last settings row in the toolbar popup',()=>{const html=src('popup.html');assert.ok(html.indexOf('id="uiLanguageSettings"')>html.indexOf('id="status"'));assert.equal((html.match(/data-ui-language=/g)||[]).length,2);assert.ok(!html.includes('id="langToggleBtn"'));assert.ok(!html.includes('id="langDropdown"'));for(const name of ['inpage-controls.js','helper-ui-shell.js'])assert.ok(!src(name).includes('data-ui-language'),name);const m=JSON.parse(src('manifest.json'));const page=m.content_scripts.find(x=>x.js.includes('helper-ui-shell.js'));assert.ok(page.js.indexOf('ui-language.js')<page.js.indexOf('helper-ui-shell.js'));});
 test('the shared language observer is attached to owned shadows, not the game document',()=>{const code=src('ui-language.js');assert.ok(code.includes('chrome'));assert.ok(src('helper-ui-shell.js').includes('Cor3UiLanguage?.observe?.(node.shadowRoot||node)'));});
+
+test('first-use popup language follows the browser UI even if the page language differs; saved language still wins',async()=>{
+ for(const [ui,stored,expected] of [['zh-CN',null,'zh'],['zh-CN','en','en'],['en-US','zh','zh'],[undefined,null,'en']]){
+  const b=backend(stored?{cor3RelayUiLanguage:stored}:{});
+  const c=vm.createContext({browser:{storage:{local:b.storage,onChanged:b.changes},i18n:{getUILanguage:()=>ui}},navigator:{languages:['en-US'],language:'en-US'}});
+  vm.runInContext(src('ui-language.js'),c);await c.Cor3UiLanguage.ready;
+  assert.equal(c.Cor3UiLanguage.get(),expected);assert.equal(b.writes.length,0);
+ }
+});
+test('popup connection, account heading and identified account use one language and preserve the identifier',async()=>{
+ const {language}=fixture(),account='FREEL_FF000001-0001';
+ const heading=src('popup.html').match(/<details><summary>([^<]+)<\/summary><p id="centerAccountStatus"/)[1];
+ const connected=src('solver-popup-ui.js').match(/status\('(三个解密功能已连接[^']+)'\)/)[1];
+ const accountText=src('center-ui.js').match(/status\(`(已识别当前窗口账号[^\x60]+)`\)/)[1].replace('${fixed.accountId}',account);
+ const zh=[connected,heading,accountText],en=['Puzzle solvers are connected to this game page without account identification. Other features verify the account separately.','Account verification for other features','Account in this window: '+account+'. Saved settings for this account apply.'];
+ for(const [lang,want] of [['en',en],['zh',zh],['en',en]]){
+  await language.set(lang);assert.deepEqual(zh.map(s=>language.text(s)),want);
+ }
+});

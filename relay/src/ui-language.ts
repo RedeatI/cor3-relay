@@ -189,12 +189,15 @@ export function bindDocument(language: Runtime, document: Document): void {
     void language.ready.then(sync);
     sync();
 }
-type BrowserApi = { storage?: { local?: Storage; onChanged?: Changes } };
+type BrowserApi = { i18n?: { getUILanguage?(): string }; storage?: { local?: Storage; onChanged?: Changes } };
 const host = globalThis as typeof globalThis & { chrome?: BrowserApi; browser?: BrowserApi; Cor3UiLanguage?: Runtime; Cor3UiLanguageFactory?: object };
 host.Cor3UiLanguageFactory = Object.freeze({ create, detect, translate, key, bindDocument });
 const api = host.chrome ?? host.browser;
 if (api?.storage?.local && !host.Cor3UiLanguage) {
-    const language = create({ storage: api.storage.local, ...(api.storage.onChanged ? { changes: api.storage.onChanged } : {}), languages: typeof navigator === 'undefined' ? [] : [...(navigator.languages ?? []), navigator.language] });
+    const browserLanguage = api.i18n?.getUILanguage?.();
+    const pageLanguages = typeof navigator === 'undefined' ? [] : [...(navigator.languages ?? []), navigator.language];
+    const languages = browserLanguage ? [browserLanguage, ...pageLanguages] : pageLanguages;
+    const language = create({ storage: api.storage.local, ...(api.storage.onChanged ? { changes: api.storage.onChanged } : {}), languages });
     host.Cor3UiLanguage = language;
     if (typeof document !== 'undefined' && /^(chrome|moz)-extension:$/.test(globalThis.location?.protocol ?? '')) {
         const mount = () => bindDocument(language, document);

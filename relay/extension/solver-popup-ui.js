@@ -1,7 +1,7 @@
 /* Three page-local preferences never wait for account identity. This UI pins one page generation. */
 (function(root){'use strict';const api=root.chrome||root.browser;let fixed=null,invalid=false,initial=null;const fields=['windowId','tabId','url','documentId','epoch'];const keys=['autoDecryptEnabled','autoIceWallEnabled','autoSimpleDecryptEnabled','helperMode'];
 const same=(a,b)=>a&&b&&fields.every(k=>a[k]===b[k]);
-function status(t){const el=root.document?.getElementById('centerConnectionStatus');if(el)el.textContent=t}
+function status(t){const el=root.document?.getElementById('centerConnectionStatus');if(el){if(root.Cor3UiLanguage)root.Cor3UiLanguage.setText(el,t);else el.textContent=t;}}
 function fail(code){invalid=true;status('当前游戏页面已变化，请重新打开插件。三个开关未改到其他页面。');throw Error(code||'SOLVER_SCOPE_STALE')}
 function checked(r){if(!r?.ok||!r.scope||!r.values)throw Error(r?.code||'SOLVER_PAGE_UNAVAILABLE');if(keys.some(k=>typeof r.values[k]!=='boolean'))throw Error('SOLVER_PREFERENCES_UNKNOWN');return r}
 async function current(){if(invalid)return fail();if(!fixed){if(!initial)initial=(async()=>{const w=await api.windows.getCurrent({populate:false});if(!Number.isSafeInteger(w?.id)||w.id<0||w.type!=='normal')throw Error('SOLVER_WINDOW_UNAVAILABLE');const r=checked(await api.runtime.sendMessage({type:'solverPageResolve',windowId:w.id}));const after=await api.windows.getCurrent({populate:false});if(after?.id!==w.id||r.scope.windowId!==w.id)return fail();fixed=Object.freeze({...r.scope});return r})();try{await initial}catch(e){initial=null;status('请在当前 COR3 游戏标签页打开插件。三个解密功能不需要账号身份探测。');throw e}}
