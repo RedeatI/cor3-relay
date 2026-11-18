@@ -1,4 +1,4 @@
-# Relay 2.2.0 validation
+# Relay 2.2.1 validation
 
 Verified locally on Windows with Node 24.14.1. The Chrome and Edge builds each
 passed 561 regression tests. The separate upstream reference passed 448 tests

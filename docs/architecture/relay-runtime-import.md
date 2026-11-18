@@ -5,7 +5,7 @@ Date: 2026-11-18
 ## Decision
 
 COR3 Relay is a public fork of SaltApocalypse/cor3-helper. The upstream `src/`
-TypeScript architecture and its 2.0.5 history remain intact. Relay 2.2.0 is a
+TypeScript architecture and its 2.0.5 history remain intact. Relay 2.2.1 is a
 separate compatibility distribution under `relay/`, built for Chrome and Edge.
 Do not claim that the upstream TypeScript build generates the Relay runtime.
 The import is based on upstream `v2` commit

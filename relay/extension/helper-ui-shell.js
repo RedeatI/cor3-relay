@@ -42,7 +42,7 @@
   doc.body.append(host);const panel=shadow.getElementById('window'),launcher=shadow.getElementById('launcher'),opened=new Set(),closed=new Set();launcher.setAttribute('data-language-raw','');launcher.style.padding='0 3px';launcher.style.whiteSpace='nowrap';launcher.style.overflow='hidden';launcher.style.textOverflow='ellipsis';
   let selected='tasks',anchor=restorePosition(null,viewport(win)),point=anchorPoint(anchor,viewport(win)),drag=null,suppressClick=false,savedTimer,wasBusy=false,positionTouched=false,layoutFrame=null;
   root.Cor3UiLanguage?.observe?.(shadow);
-  shadow.getElementById('version').textContent=(root.chrome||root.browser)?.runtime?.getManifest?.().version||'2.2.0';
+  shadow.getElementById('version').textContent=(root.chrome||root.browser)?.runtime?.getManifest?.().version||'2.2.1';
   function styles(node,values){for(const [key,value]of Object.entries(values))if(node.style[key]!==value)node.style[key]=value;}
   function place(){const view=viewport(win),desired=drag?point:anchorPoint(anchor,view),p=layout({...view,...desired,panelHeight:panel.scrollHeight>0?panel.scrollHeight+2:470});point={x:p.x,y:p.y};styles(launcher,{left:p.x+view.left+'px',top:p.y+view.top+'px',width:p.buttonWidth+'px',height:p.buttonHeight+'px'});styles(panel,{left:p.left+view.left+'px',top:p.top+view.top+'px',width:p.width+'px',maxHeight:p.maxHeight+'px'});}
   function schedulePlace(){if(layoutFrame!==null)return;if(typeof win.requestAnimationFrame!=='function'){place();return;}layoutFrame=win.requestAnimationFrame(()=>{layoutFrame=null;place();});}

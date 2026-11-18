@@ -10,7 +10,7 @@ An independent public fork of **SaltApocalypse/cor3-helper**, originally based
 on **Femtoce11/cor3-helper**. Upstream history and copyright notices are retained.
 This is not an official COR3 or Salta release.
 
-Relay **2.2.0** lives in [`relay/`](relay/README.md). The upstream **2.0.5**
+Relay **2.2.1** lives in [`relay/`](relay/README.md). The upstream **2.0.5**
 TypeScript rewrite remains in `src/` as a separately buildable reference.
 The [architecture decision](docs/architecture/relay-runtime-import.md) explains
 the compatibility boundary and remaining technical debt. Only **Chrome and
@@ -36,7 +36,7 @@ Publishing this source does not update existing installations.
 
 ## Relay 2.2
 
-[2.2.0 release notes](relay/RELEASE-2.2.0.md)
+[2.2.1 release notes](relay/RELEASE-2.2.1.md)
 
 - Account/document isolation, persistent browser-account binding and serialized
   settings writes. Explicit off values remain authoritative.

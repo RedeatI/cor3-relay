@@ -24,7 +24,7 @@
   });
  }
  const queueView=net=>net?{active:clean(net.active),queued:Array.isArray(net.queued)?net.queued.map(clean):[],blocked:clean(net.blocked),owner:clean(net.lease?.owner)}:null;
- function create({identity=root.Cor3CenterIdentity,admit,store=root.Cor3CenterStore,allowed=()=>root.Cor3Automation?.allowed()===true,dispatch,enqueue,queue=()=>root.Cor3NetworkRuntime?.snapshot(),version='2.2.0',now=()=>Date.now(),sleep=ms=>new Promise(r=>setTimeout(r,ms)),observeMs=35000}={}){
+ function create({identity=root.Cor3CenterIdentity,admit,store=root.Cor3CenterStore,allowed=()=>root.Cor3Automation?.allowed()===true,dispatch,enqueue,queue=()=>root.Cor3NetworkRuntime?.snapshot(),version='2.2.1',now=()=>Date.now(),sleep=ms=>new Promise(r=>setTimeout(r,ms)),observeMs=35000}={}){
   let lastOperation=null,sequence=0,pending=null,readSequence=0,autoBatch=null,autoFlight=null;
   let heavyView=null,visualRevision=0,equipmentView=null;
   const heavyKeys=['loadoutData','mercenariesData','usolMercenariesData','expeditionConfigData','usolExpeditionConfigData','droneData','dailyOpsData','expeditionsData'];
