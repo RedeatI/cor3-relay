@@ -63,74 +63,68 @@ function _wsOpenDb() {
     return _wsOpening;
 }
 
+function _wsTransactionDone(tx) {
+    return new Promise((resolve, reject) => {
+        tx.oncomplete = resolve;
+        tx.onabort = tx.onerror = () => reject(tx.error || new Error('Log transaction aborted'));
+    });
+}
+
+async function _wsPruneStore(db, name, limit, cutoff) {
+    // Index.getAllKeys returns primary keys without cloning archived message bodies.
+    const tx = db.transaction(name, 'readwrite');
+    const store = tx.objectStore(name);
+    const expired = store.index('timestamp').getAllKeys(IDBKeyRange.upperBound(cutoff, true), 512);
+    expired.onsuccess = () => {
+        for (const key of expired.result) store.delete(key);
+        const count = store.count();
+        count.onsuccess = () => {
+            const excess = count.result - limit;
+            if (excess <= 0) return;
+            // IDs are auto-incremented. Find the last excess key and delete the prefix
+            // under the same transaction, including after a concurrent clear or a gap.
+            const cursor = store.openKeyCursor();
+            let advance = excess - 1;
+            cursor.onsuccess = () => {
+                const row = cursor.result;
+                if (!row) return;
+                if (advance) {
+                    const skip = advance;
+                    advance = 0;
+                    row.advance(skip);
+                } else {
+                    store.delete(IDBKeyRange.upperBound(row.primaryKey));
+                }
+            };
+        };
+    };
+    await _wsTransactionDone(tx);
+}
+
+let _wsPurgeRunning = false;
 async function _wsPurgeOld() {
     const now = Date.now();
-    if (now - _wsLastPurge < 60000) return;
+    const elapsed = now - _wsLastPurge;
+    if (_wsPurgeRunning || (elapsed >= 0 && elapsed < 60000)) return;
+    _wsPurgeRunning = true;
     _wsLastPurge = now;
     try {
         const db = await _wsOpenDb();
         const cutoff = new Date(now - COR3_WS_MAX_AGE).toISOString();
-        const tx = db.transaction(COR3_WS_STORE, 'readwrite');
-        const idx = tx.objectStore(COR3_WS_STORE).index('timestamp');
-        const range = IDBKeyRange.upperBound(cutoff, true);
-        let purged = 0;
-        const req = idx.openCursor(range);
-        req.onsuccess = (e) => {
-            const cursor = e.target.result;
-            if (cursor) { cursor.delete(); purged++; cursor.continue(); }
-        };
-        await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
-        if (purged > 0) console.log('[COR3 WS-Log] Purged', purged, 'WS entries older than 24h');
-        const tx2 = db.transaction(COR3_WS_LOGS_STORE, 'readwrite');
-        const idx2 = tx2.objectStore(COR3_WS_LOGS_STORE).index('timestamp');
-        const range2 = IDBKeyRange.upperBound(cutoff, true);
-        let purged2 = 0;
-        const req2 = idx2.openCursor(range2);
-        req2.onsuccess = (e) => {
-            const cursor = e.target.result;
-            if (cursor) { cursor.delete(); purged2++; cursor.continue(); }
-        };
-        await new Promise((resolve, reject) => { tx2.oncomplete = resolve; tx2.onerror = () => reject(tx2.error); });
-        if (purged2 > 0) console.log('[COR3 WS-Log] Purged', purged2, 'log entries older than 24h');
-        // Count-based trim: keep at most COR3_WS_MAX_ENTRIES in messages store
-        await _wsTrimByCount(db, COR3_WS_STORE, COR3_WS_MAX_ENTRIES);
-        // Count-based trim: keep at most COR3_WS_LOGS_MAX_ENTRIES in logs store
-        await _wsTrimByCount(db, COR3_WS_LOGS_STORE, COR3_WS_LOGS_MAX_ENTRIES);
+        await _wsPruneStore(db, COR3_WS_STORE, COR3_WS_MAX_ENTRIES, cutoff);
+        await _wsPruneStore(db, COR3_WS_LOGS_STORE, COR3_WS_LOGS_MAX_ENTRIES, cutoff);
     } catch (e) {
         console.log('[COR3 WS-Log] Purge failed:', e);
+    } finally {
+        _wsPurgeRunning = false;
     }
-}
-
-async function _wsTrimByCount(db, storeName, maxEntries) {
-    const tx = db.transaction(storeName, 'readonly');
-    const store = tx.objectStore(storeName);
-    const countReq = store.count();
-    const count = await new Promise((resolve) => { countReq.onsuccess = () => resolve(countReq.result); countReq.onerror = () => resolve(0); });
-    if (count <= maxEntries) return;
-    const excess = count - maxEntries;
-    const tx2 = db.transaction(storeName, 'readwrite');
-    const store2 = tx2.objectStore(storeName);
-    let deleted = 0;
-    const cursorReq = store2.openCursor();
-    cursorReq.onsuccess = (e) => {
-        const cursor = e.target.result;
-        if (cursor && deleted < excess) { cursor.delete(); deleted++; cursor.continue(); }
-    };
-    await new Promise((resolve, reject) => { tx2.oncomplete = resolve; tx2.onerror = () => reject(tx2.error); });
-    if (deleted > 0) console.log('[COR3 WS-Log] Trimmed', deleted, 'entries from', storeName, '(limit:', maxEntries, ')');
 }
 
 async function _wsWriteEntry(entry) {
     const db = await _wsOpenDb();
     const tx = db.transaction(COR3_WS_STORE, 'readwrite');
     tx.objectStore(COR3_WS_STORE).add(entry);
-    await new Promise((resolve, reject) => {
-        tx.oncomplete = resolve;
-        tx.onerror = () => {
-            console.log('[COR3 WS-Log] Write failed:', tx.error);
-            reject(tx.error);
-        };
-    });
+    await _wsTransactionDone(tx);
 }
 
 function _sanitizeWsMessage(msg) {
@@ -167,7 +161,7 @@ async function cor3ClearWsMessages() {
         const db = await _wsOpenDb();
         const tx = db.transaction(COR3_WS_STORE, 'readwrite');
         tx.objectStore(COR3_WS_STORE).clear();
-        await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+        await _wsTransactionDone(tx);
         console.log('[COR3 WS-Log] All messages cleared');
     } catch (e) {
         console.log('[COR3 WS-Log] Clear failed:', e);
@@ -185,7 +179,8 @@ async function cor3LogEntry(category, message, level) {
         const db = await _wsOpenDb();
         const tx = db.transaction(COR3_WS_LOGS_STORE, 'readwrite');
         tx.objectStore(COR3_WS_LOGS_STORE).add(entry);
-        await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+        await _wsTransactionDone(tx);
+        void _wsPurgeOld();
     } catch (e) {
         if (e && (e.name === 'NotFoundError' || e.name === 'InvalidStateError')) {
             _wsInvalidateDb();
@@ -198,7 +193,7 @@ async function cor3LogEntry(category, message, level) {
                     message: globalThis.Cor3RunLog?.text(message)||String(message),
                     level: level || 'info'
                 });
-                await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+                await _wsTransactionDone(tx);
             } catch (e2) {
                 console.log('[COR3 WS-Log] cor3LogEntry retry failed:', e2);
             }
@@ -217,7 +212,7 @@ async function cor3ClearLogsByCategory(category) {
             const cursor = e.target.result;
             if (cursor) { cursor.delete(); cursor.continue(); }
         };
-        await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+        await _wsTransactionDone(tx);
         console.log('[COR3 WS-Log] Cleared logs for category:', category);
     } catch (e) {
         console.log('[COR3 WS-Log] Clear logs failed:', e);

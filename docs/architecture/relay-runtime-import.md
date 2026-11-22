@@ -25,6 +25,52 @@ selection, automatic market batches, missed-refresh catch-up, and bounded logs.
 Runtime checksums in `relay/runtime-integrity.json` describe this public snapshot.
 They are an integrity record, not a signature or proof of live game success.
 
+## Daily run ownership
+
+The account store serializes Daily lock acquisition, release and schedule
+writes with preference updates. A refreshed document may replace a lock from
+the preceding document in its tab. A lock from another tab remains until the
+browser verifies the tab has closed or the lease expires. Legacy locks without
+document metadata keep the original lease. A disabled Daily setting suppresses
+wakeup writes and cancels the stored schedule.
+
+## Automatic market triggers
+
+Market jobs replies use an explicit market ID or the matching socket request.
+Ambiguous replies do not complete a market read or overwrite its job list.
+The sender records the market identity once, including when the request is
+encoded as MessagePack.
+Automatic market rounds compare the current document's verified jobs receipt
+with the list it identifies. Options and lot updates preserve the jobs
+revision in their merged cache. The page wakes the scheduler after the receipt
+is persisted and again when the matching refresh ticket releases the endpoint.
+The scheduler still waits for timed activity, respects explicit off settings
+and retains a reservation when dispatch is uncertain.
+Batch running markers are stamped with their document by the account store.
+On page admission, the store can clear the running flag and pending list from
+a previous document without changing its results or market coverage records.
+This check is serialized with batch writes and preserves the current document's
+marker, including while a batch is being admitted. A confirmed missing prerequisite
+rules out repeated attempts through the same node. Independent alternatives
+remain eligible. If every path is ruled out for missing software, the batch
+records that reason and skips the job.
+When the batch still holds an expired endpoint lease, the panel shows this
+state and waits for completion acknowledgement before allowing another batch.
+
+## Terminal puzzle support lists
+
+The page watcher accepts repeated support lists only when each complete copy
+matches the original in field order, labels and choices. The visible control
+count determines the expected size. Conflicting or partial copies leave the
+puzzle untouched.
+
+## Visible ICE Wall matches
+
+Multiple complete SVG matches can occur for the same target. Select one in
+board order. A new, explicit mismatch allows one other complete match in that
+same round. An unconfirmed result leaves the first submission pending rather
+than resubmitting.
+
 ## Public import changes
 
 - Display name is COR3 Relay; protocol messages and storage namespaces remain
@@ -113,3 +159,21 @@ separately. No account is accessed by these commands.
 Offline fixtures cover routing, queue tickets, races, settings, solver algorithms,
 timers and recovery. They do not prove live task rewards, actual CPU/FPS gains,
 long background operation, sleep recovery, or account progression.
+
+## Background waits and startup roster reads
+
+Startup and automatic panel reads request the mercenary roster and location configuration. A price quote is only requested by a caller that needs one. A roster result cannot stand in for a launch quote. The browser schedules transport and UI waits with positive-delay timers; a resumed tab checks the existing packet expiry and generation before sending. No timer catch-up replays an expired command.
+
+## Relay 2.3.0 background lifetime
+
+A refresh owns its listener until its ticket is released. Cancellation removes
+the listener, while a timeout with an unknown outcome keeps the lease. A late
+acknowledgement from a cancelled ticket has no effect. Correcting the system
+clock cannot extend the socket pacing interval; packet age and generation are
+checked again before a send.
+
+Console batches from a bound document are appended under the same serialized
+store guard as settings. Each subscriber materializes its own log copy only if
+it requests that key. Database maintenance uses bounded timestamp-index reads
+and trims by primary key atomically; aborts settle the pending operation.
+The upstream selection and mapping ports are documented in relay/UPSTREAM-REVIEW.md.

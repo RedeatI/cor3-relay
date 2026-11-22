@@ -24,3 +24,52 @@ test('claim write failure prevents admission',async()=>{const f=fixture();f.pool
 test('unknown admission keeps the durable claim and cannot replay after reload',async()=>{const f=fixture();f.pool();f.beginFail('PAGE_ACTION_TIMEOUT');await f.run();assert.ok(f.data.autoMarketJobsSeenV1.home);assert.equal(f.state().phase,'review');f.beginFail(null);f.reload();await f.run();assert.equal(f.calls.length,0);});
 test('explicit pre-admission contention restores the previous claim and can retry safely',async()=>{const f=fixture();f.pool();f.beginFail('PAGE_JOB_BATCH_RUNNING');await f.run();assert.equal(f.data.autoMarketJobsSeenV1.home,null);f.beginFail(null);await f.run();assert.equal(f.calls.length,1);});
 test('timed activity detection covers all three solvers and visible game frames, not expeditions',()=>{const body=src('content.js'),code=body.slice(body.indexOf('  function timedActivityRunning()'),body.indexOf('  let networkCoordinator'));let selector;const c=vm.createContext({document:{querySelectorAll:s=>{selector=s;return [{getClientRects:()=>[{}]}];}},getComputedStyle:()=>({visibility:'visible',display:'block'})});vm.runInContext(code,c);assert.equal(c.timedActivityRunning(),true);for(const x of ['IceWallBreakApplication','ConfigHackApplication','SimpleDecryptApplication','iframe[src*="/games/"]'])assert.ok(selector.includes(x));assert.ok(!selector.includes('Expedition'));});
+
+
+test('a verified jobs receipt survives a later options cache timestamp and admits exactly one round when the queue drains', async () => {
+ const f=fixture();
+ f.pool('home');
+ const proof=f.data.marketReadProofs.home;
+ proof.jobsReadId=41;
+ f.data.marketData.relayJobsReadId=41;
+ f.now(proof.at+120000);
+ f.data.marketDataUpdatedAt=proof.at+90000;
+ f.queue({...f.scope(),active:'manual-market',queued:[]});
+ await f.run();
+ assert.equal(f.calls.length,0);
+ f.queue({...f.scope(),active:null,queued:[]});
+ await f.run();
+ assert.equal(f.calls.length,1);
+ assert.equal(f.calls[0].fresh.after,proof.at);
+ f.batch({phase:'complete'});
+ await f.run();
+ assert.equal(f.calls.length,1);
+});
+
+test('a jobs receipt must match the current list, and an expired market pool is never claimed', async () => {
+ const f=fixture();
+ f.pool('home');
+ f.data.marketReadProofs.home.jobsReadId=41;
+ f.data.marketData.relayJobsReadId=42;
+ await f.run();
+ assert.equal(f.calls.length,0);
+ assert.equal(f.data.autoMarketJobsSeenV1,undefined);
+ f.data.marketReadProofs.home.jobsReadId=42;
+ f.data.marketData.nextJobsResetAt=new Date(f.data.marketReadProofs.home.at-10).toISOString();
+ await f.run();
+ assert.equal(f.calls.length,0);
+ assert.equal(f.data.autoMarketJobsSeenV1,undefined);
+});
+
+
+test('a temporary background read failure re-arms the unclaimed check without replaying admission',async()=>{
+ const f=fixture();
+ f.pool('home');
+ f.readHook(()=>{throw Error('CENTER_STORE_TIMEOUT');});
+ await f.run();
+ assert.equal(f.calls.length,0);
+ assert.equal(f.state().phase,'waiting-permission');
+ assert.equal(f.timers.size,1);
+ await f.run();
+ assert.equal(f.calls.length,1);
+});

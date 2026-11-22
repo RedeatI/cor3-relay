@@ -1,3 +1,19 @@
+# Upstream review for Relay 2.3.0
+
+Reviewed SaltApocalypse v2.0.6 and v2.0.7 through commit
+`66a8f166a8ab500d7b670aa5dea8b1ee0ab88813` against v2.0.5.
+The shipped Relay content scripts accept top-level risk and loot deltas and
+derive baseline expedition or drone risk from an option when the event lacks
+an explicit risk score. A reported zero takes precedence. Relay continues to
+use the player's saved decision weights. Both expedition readers preserve an
+already selected or automatically resolved decision.
+
+The typed reference remains based on 2.0.5. The specialist offer ownership
+fix and its tests were imported from 2.0.7. Relay retained its account-bound
+market receipts, write queue and explicit user update process. The upstream
+market state repository and upstream-specific update checker have different
+storage and release identities.
+
 # Upstream review, 2026-11-18
 
 SaltApocalypse `v2` was fetched again after its new release appeared. The latest

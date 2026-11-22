@@ -195,6 +195,7 @@ PSU 供电|PSU power
 插件未接受此操作|The extension did not accept this operation
 设置保存尚未确认，请读取状态核对|Saving is unconfirmed. Read status to check.
 等待限时操作或当前任务结束|Waiting for the timed activity or current task
+自动调度等待手动批次结束|Automatic scheduling is waiting for the manual batch
 刷新后的一轮已加入队列|The refreshed batch is queued
 本次刷新没有待执行任务|No pending tasks in this refresh
 自动任务待核对：|Automatic tasks need review:\x20
@@ -210,6 +211,8 @@ PSU 供电|PSU power
 等待执行器确认；端点仍由本轮占用|Waiting for the executor; this batch still holds the endpoint
 正在核对本轮结果|Checking this batch's results
 正在执行|Running
+端点占用已超时，等待本轮结束确认|Endpoint lease timed out. Waiting for this batch to finish.
+缺少兼容的游戏软件|No compatible game software is available.
 正在停止，等待当前步骤结束|Stopping after the current step finishes
 本轮已结束，请核对明细|Batch finished. Check the results.
 本轮已结束，部分市场未读取|Batch finished. Some markets were not read.
@@ -375,6 +378,11 @@ ICE Wall 自动破解报告错误|ICE Wall solver reported an error
 游戏返回无人机操作错误|The game returned a drone operation error
 已发出无人机远征决策|Drone expedition decision sent
 轮次未推进，已停止本次尝试|The round did not advance; this attempt was stopped
+下一轮目标图案未就绪|The next round target was not ready
+等待结束前未找到可靠的符文匹配|No reliable glyph match before the deadline
+游戏判定本次符文匹配错误|The game rejected the matching glyph
+日常任务锁仍在有效期内|Daily lock is still within its lease
+已同步当前页面会话，正在查询日常领取状态|Current page session found; checking Daily claim state
 匹配点击多次未获确认，已停止本轮|Repeated matching clicks were not confirmed; this round was stopped
 读取当前页…|Reading the current page…
 游戏页面已变化|Game page changed

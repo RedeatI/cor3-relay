@@ -1,3 +1,20 @@
+# Relay 2.3.0 validation
+
+On Windows with Node 24.14.1 the Chrome and Edge package suites each passed 600
+tests. The typed reference suite passed 450 tests across 93 files.
+Both type checks, lint checks, ordinary and minified reference builds passed.
+
+A fresh headless Chrome profile and a fresh headless Edge profile ran the built
+log module against native IndexedDB on loopback. Each processed 1,800 records
+with gaps and mixed ages, bounded age cleanup to 512 out of 800 records on the
+first pass, removed the remaining 288 on the next pass and wrote a new record
+after an intentional transaction abort. The account fixtures also covered
+clock rollback, cancelling a refresh before a late reply, and simultaneous
+console writers at the 5,000-entry limit.
+
+This release did not operate a logged-in game account. Overnight gameplay, OS
+sleep and real server latency were not reproduced by these checks.
+
 # Relay 2.2.1 validation
 
 Verified locally on Windows with Node 24.14.1. The Chrome and Edge builds each

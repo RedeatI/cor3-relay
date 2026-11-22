@@ -40,8 +40,12 @@
     return _marketRefreshAbortId;
   }
   function bumpMarketRefreshAbortId() {
-    wsSendQueue=[];wsSendFlushTimer=null;
-    return ++_marketRefreshAbortId;
+    const generation = ++_marketRefreshAbortId;
+    clearTimeout(wsSendFlushTimer);
+    wsSendFlushTimer = null;
+    const unsent = wsSendQueue.splice(0);
+    for (const entry of unsent) entry.onNotSent?.();
+    return generation;
   }
   var HOME_MARKET_ID = "019d3ea4-85bd-7389-904d-8f7c85841134";
   var DARK_MARKET_ID = "019d3ea4-85bd-7389-904d-908ba9194aa0";
@@ -93,6 +97,52 @@
       cb(null);
     }
   }
+  const marketJobsRequests = new WeakMap();
+  const relaySocketSends = new WeakSet();
+  const marketJobsReplyWindowMs = 45000;
+  function knownJobsMarket(id) {
+    return id === HOME_MARKET_ID || id === DARK_MARKET_ID || id === SOYUZ_MARKET_ID || id === USOL_MARKET_ID;
+  }
+  function noteMarketJobsRequest(socket, packet) {
+    if (typeof packet !== "string" || !packet.startsWith("42") || !packet.includes('"get.jobs"')) return;
+    let event;
+    try { event = JSON.parse(packet.slice(2)); } catch { return; }
+    const request = event?.[1];
+    if (event?.[0] !== "event" || request?.event?.name !== "market" || request.event.action !== "get.jobs") return;
+    const marketId = request.data?.marketId;
+    if (!knownJobsMarket(marketId)) return;
+    const now = Date.now();
+    let pending = marketJobsRequests.get(socket);
+    if (!pending) marketJobsRequests.set(socket, pending = {queue:[], ambiguousUntil:0});
+    pending.queue = pending.queue.filter(row => row.expiresAt > now);
+    if (pending.queue.length >= 16) {
+      pending.ambiguousUntil = now + marketJobsReplyWindowMs;
+      pending.queue = [];
+    }
+    pending.queue.push({marketId, expiresAt:now + marketJobsReplyWindowMs});
+  }
+  function matchMarketJobsReply(socket, data) {
+    const pending = socket && marketJobsRequests.get(socket);
+    const explicit = data.marketId ?? data.market?.id;
+    const now = Date.now();
+    if (pending) pending.queue = pending.queue.filter(row => row.expiresAt > now);
+    if (explicit !== undefined && explicit !== null) {
+      if (!knownJobsMarket(explicit)) return null;
+      const index = pending?.queue.findIndex(row => row.marketId === explicit) ?? -1;
+      if (index >= 0) pending.queue.splice(index,1);
+      return explicit;
+    }
+    if (!pending?.queue.length || pending.ambiguousUntil > now) return null;
+    const marketId = pending.queue[0].marketId;
+    if (pending.queue.some(row => row.marketId !== marketId)) {
+      // Two distinct requests on one socket cannot be matched by reply order.
+      pending.ambiguousUntil = pending.queue.at(-1).expiresAt;
+      pending.queue = [];
+      return null;
+    }
+    pending.queue.shift();
+    return marketId;
+  }
   function installWebSocketProxy(handleWsMessage2) {
     const WebSocketProxy = new Proxy(OrigWebSocket, {
       construct(target, args) {
@@ -108,6 +158,13 @@
           }
           var origSend = ws.send.bind(ws);
           ws.send = function(data) {
+            const trackMarket = !isMinigameSocket && !relaySocketSends.has(ws);
+            let sent = false, marketPacket = data;
+            function captureDecodedMarket(packet) {
+              if (!trackMarket || !packet) return;
+              if (sent) noteMarketJobsRequest(ws, packet);
+              else marketPacket = packet;
+            }
             try {
               if (typeof data === "string") {
                 if (data.indexOf("40{") === 0) {
@@ -124,6 +181,7 @@
               } else if (data instanceof ArrayBuffer || typeof Uint8Array !== "undefined" && ArrayBuffer.isView(data)) {
                 decodeBinaryMsg(data, function(str) {
                   if (str) {
+                    captureDecodedMarket(str);
                     window.postMessage({ type: "COR3_WS_LOG", direction: "sent", message: str }, "*");
                     if (str.indexOf("40{") === 0) {
                       try {
@@ -140,6 +198,7 @@
               } else if (data instanceof Blob) {
                 decodeBinaryMsg(data, function(str) {
                   if (str) {
+                    captureDecodedMarket(str);
                     window.postMessage({ type: "COR3_WS_LOG", direction: "sent", message: str }, "*");
                     if (str.indexOf("40{") === 0) {
                       try {
@@ -156,7 +215,10 @@
               }
             } catch (e) {
             }
-            return origSend(data);
+            const result = origSend(data);
+            sent = true;
+            if (trackMarket) noteMarketJobsRequest(ws, marketPacket);
+            return result;
           };
           ws.addEventListener("message", function(event) {
             try {
@@ -220,57 +282,25 @@
   var wsSendQueue = [];
   var wsSendFlushTimer = null;
   var WS_QUEUE_MAX = 50;
-  var _ceChannel = typeof MessageChannel !== "undefined" ? new MessageChannel() : null;
-  var _ceCbs = [];
-  if (_ceChannel) {
-    _ceChannel.port1.onmessage = function() {
-      var cbs = _ceCbs.slice();
-      _ceCbs.length = 0;
-      for (var i = 0; i < cbs.length; i++) cbs[i]();
-    };
-  }
-  function ceNextTick(fn) {
-    if (_ceChannel) {
-      _ceCbs.push(fn);
-      _ceChannel.port2.postMessage(0);
-    } else {
-      setTimeout(fn, 0);
-    }
-  }
+
   function scheduleFlush(delayMs) {
-    if (wsSendFlushTimer) return;
-    if (delayMs <= 0) {
-      ceNextTick(wsSendFlush);
-      wsSendFlushTimer = true;
-      return;
-    }
-    var target = Date.now() + delayMs;
-    function tick() {
-      if (Date.now() >= target) {
-        wsSendFlush();
-        return;
-      }
-      var rem = target - Date.now();
-      if (rem > 200) {
-        setTimeout(function() {
-          ceNextTick(tick);
-        }, Math.min(rem - 50, 500));
-      } else {
-        ceNextTick(tick);
-      }
-    }
-    wsSendFlushTimer = true;
-    ceNextTick(tick);
+    if (wsSendFlushTimer !== null) return;
+    wsSendFlushTimer = setTimeout(wsSendFlush, Math.max(0, delayMs));
   }
   function packetStamp() { return {generation:window.__cor3MasterGate.snapshot().generation,abort:getMarketRefreshAbortId(),at:Date.now()}; }
   function packetValid(stamp,msg) {
     return stamp&&stamp.generation===window.__cor3MasterGate.snapshot().generation&&stamp.abort===getMarketRefreshAbortId()&&Date.now()>=stamp.at&&Date.now()-stamp.at<=(Cor3MasterCore.isReadOnlyPacket(msg)?15000:5000);
   }
+  function elapsedSinceSend() {
+    const elapsed = Date.now() - wsSendLastTime;
+    // A clock correction invalidates older packets independently in packetValid.
+    return elapsed < 0 ? WS_THROTTLE_MS : elapsed;
+  }
   function transportState(code) { window.postMessage({type:'COR3_TRANSPORT_STATE',code},location.origin); }
-  function wsSendRaw(msg,stamp) {
+  function wsSendRaw(msg,stamp,onNotSent,onUnconfirmed) {
     stamp=stamp||packetStamp();
-    if(!packetValid(stamp,msg)){transportState('PACKET_EXPIRED');return false;}
-    if(!window.__cor3MasterGate.permitsPacket(msg))return false;
+    if(!packetValid(stamp,msg)){transportState('PACKET_EXPIRED');onNotSent?.();return false;}
+    if(!window.__cor3MasterGate.permitsPacket(msg)){onNotSent?.();return false;}
     var toSend=msg,codec=window.__cor3MsgpackCodec;
     if(codec&&codec.isReady()&&typeof msg==='string'){var buf=codec.stringToPacketBuffer(msg);if(buf)toSend=buf;}
     var activeSocket=getActiveSocket();
@@ -280,26 +310,38 @@
       if(activeSocket)setActiveSocket(activeSocket);
     }
     if(activeSocket){
-      try{activeSocket.send(toSend);wsSendLastTime=Date.now();return true;}
-      catch{transportState('SEND_UNCONFIRMED');return false;}
+      relaySocketSends.add(activeSocket);
+      try{
+        activeSocket.send(toSend);
+        // Keep the original request identity even when the wire format is MessagePack.
+        noteMarketJobsRequest(activeSocket,msg);
+        wsSendLastTime=Date.now();
+        return true;
+      }catch{
+        transportState('SEND_UNCONFIRMED');
+        onUnconfirmed?.();
+        return false;
+      }finally{
+        relaySocketSends.delete(activeSocket);
+      }
     }
     // Do not replay any command after a missing socket. The read loader may
     // retry only after a fresh admission; mutation outcomes stay explicit.
-    transportState('SOCKET_UNAVAILABLE');return false;
+    transportState('SOCKET_UNAVAILABLE');onNotSent?.();return false;
   }
   function wsSendFlush() {
     wsSendFlushTimer=null;if(!wsSendQueue.length)return;
-    var elapsed=Date.now()-wsSendLastTime;
+    var elapsed=elapsedSinceSend();
     if(elapsed<WS_THROTTLE_MS){scheduleFlush(WS_THROTTLE_MS-elapsed);return;}
-    const entry=wsSendQueue.shift();wsSendRaw(entry.msg,entry.stamp);
+    const entry=wsSendQueue.shift();wsSendRaw(entry.msg,entry.stamp,entry.onNotSent,entry.onUnconfirmed);
     if(wsSendQueue.length)scheduleFlush(WS_THROTTLE_MS);
   }
-  function wsSend(msg) {
+  function wsSend(msg,onNotSent,onUnconfirmed) {
     if(!window.__cor3MasterGate||!window.__cor3MasterGate.permitsPacket(msg))return false;
-    const stamp=packetStamp(),elapsed=Date.now()-wsSendLastTime;
-    if(elapsed>=WS_THROTTLE_MS&&!wsSendQueue.length)return wsSendRaw(msg,stamp);
+    const stamp=packetStamp(),elapsed=elapsedSinceSend();
+    if(elapsed>=WS_THROTTLE_MS&&!wsSendQueue.length)return wsSendRaw(msg,stamp,onNotSent,onUnconfirmed);
     if(wsSendQueue.length>=WS_QUEUE_MAX){transportState('QUEUE_FULL');return false;}
-    wsSendQueue.push({msg,stamp});if(!wsSendFlushTimer)scheduleFlush(Math.max(0,WS_THROTTLE_MS-elapsed));return true;
+    wsSendQueue.push({msg,stamp,onNotSent,onUnconfirmed});if(!wsSendFlushTimer)scheduleFlush(Math.max(0,WS_THROTTLE_MS-elapsed));return true;
   }
   function queueRetryOp(opName) {
     if (!cor3AutomationAllowed()) return;
@@ -312,24 +354,7 @@
   }
   var joinedRooms = /* @__PURE__ */ new Set();
   function delay(ms) {
-    return new Promise(function(resolve) {
-      var target = Date.now() + ms;
-      function check() {
-        if (Date.now() >= target) {
-          resolve();
-          return;
-        }
-        var remaining = target - Date.now();
-        if (remaining > 200) {
-          setTimeout(function() {
-            ceNextTick(check);
-          }, Math.min(remaining - 50, 500));
-        } else {
-          ceNextTick(check);
-        }
-      }
-      ceNextTick(check);
-    });
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
   function leaveRoom(room) {
     if (!joinedRooms.has(room)) return false;
@@ -351,34 +376,21 @@
     if (!wsSend('42["join-room",' + JSON.stringify(joinData) + "]")) return false;
     joinedRooms.add(room);
   }
-  function leaveRoomsInOrder(rooms) {
-    var chain = Promise.resolve();
-    rooms.forEach(function(room) {
-      chain = chain.then(function() {
-        if (leaveRoom(room)) {
-          return delay(humanDelay());
-        }
-      });
-    });
-    return chain;
-  }
-  function joinRoomsInOrder(rooms) {
-    var chain = Promise.resolve();
-    rooms.forEach(function(room) {
-      chain = chain.then(function() {
-        sendJoin(room);
-        return delay(humanDelay());
-      });
-    });
-    return chain;
-  }
-  function enterRooms(rooms) {
-    var toLeave = rooms.slice().reverse().filter(function(r) {
-      return joinedRooms.has(r);
-    });
-    return leaveRoomsInOrder(toLeave).then(function() {
-      return joinRoomsInOrder(rooms);
-    });
+
+  async function enterRooms(rooms) {
+    const stamp = packetStamp();
+    const valid = () => stamp.generation === window.__cor3MasterGate.snapshot().generation &&
+      stamp.abort === getMarketRefreshAbortId() && cor3AutomationAllowed();
+    for (const room of rooms.slice().reverse()) {
+      if (!valid()) return false;
+      if (leaveRoom(room)) await delay(humanDelay());
+    }
+    for (const room of rooms) {
+      if (!valid()) return false;
+      sendJoin(room);
+      await delay(humanDelay());
+    }
+    return valid();
   }
 
   // src/content-early/http-intercept.js
@@ -655,6 +667,7 @@
     }
     return false;
   }
+  let marketJobsReadSerial = 0;
   function handleWsMessage(rawData, socket) {
     if (typeof rawData !== "string") return;
     window.postMessage({ type: "COR3_WS_LOG", direction: "received", message: rawData }, "*");
@@ -782,7 +795,10 @@
         if (firstElite.mercenary && firstElite.mercenary.faction && firstElite.mercenary.faction.key) mercFactionKey = firstElite.mercenary.faction.key;
         if (!mercFactionKey && firstElite.marketId === USOL_MARKET_ID) mercFactionKey = "usol_employment";
       }
-      if (mercFactionKey === "usol_employment") {
+      const marketId = payload.data?.marketId || payload.marketId;
+      if (!marketId && !mercFactionKey && window.__cor3CoreMercFetchInProgress && window.__cor3UsolMercFetchInProgress) return;
+      const usol = marketId ? marketId === USOL_MARKET_ID : mercFactionKey ? mercFactionKey === "usol_employment" : window.__cor3UsolMercFetchInProgress;
+      if (usol) {
         window.postMessage({ type: "COR3_WS_USOL_MERCENARIES", data: payload.data }, "*");
       } else {
         if (payload.data && payload.data.mercenaries) {
@@ -795,7 +811,9 @@
       return;
     }
     if (eventName === "expeditions" && payload && payload.event && payload.event.action === "get.config") {
-      var isUsolConfig = !!window.__cor3UsolMercFetchInProgress;
+      const marketId = payload.data?.marketId || payload.marketId;
+      if (!marketId && window.__cor3CoreMercFetchInProgress && window.__cor3UsolMercFetchInProgress) return;
+      var isUsolConfig = marketId ? marketId === USOL_MARKET_ID : !!window.__cor3UsolMercFetchInProgress;
       if (payload.data && payload.data.locations && payload.data.locations.length > 0) {
         var picked = window.__cor3PickLocationConfig(payload.data.locations);
         if (isUsolConfig) {
@@ -938,11 +956,13 @@
         window.__cor3CurrentMarketFetch = mkt.id;
         var prevJobs = window[cacheKey] ? window[cacheKey].jobs : void 0;
         var prevRecentJobs = window[cacheKey] ? window[cacheKey].recentJobs : void 0;
+        const previousJobsReadId = window[cacheKey]?.relayJobsReadId;
         var prevNextJobsResetAt = window[cacheKey] ? window[cacheKey].nextJobsResetAt : void 0;
         var prevLots = window[cacheKey] ? window[cacheKey].lots : void 0;
         window[cacheKey] = Object.assign({}, payload.data);
         if (prevJobs !== void 0) window[cacheKey].jobs = prevJobs;
         if (prevRecentJobs !== void 0) window[cacheKey].recentJobs = prevRecentJobs;
+        if (previousJobsReadId !== undefined) window[cacheKey].relayJobsReadId = previousJobsReadId;
         if (prevNextJobsResetAt !== void 0) window[cacheKey].nextJobsResetAt = prevNextJobsResetAt;
         if (prevLots !== void 0) window[cacheKey].lots = prevLots;
         postMarketUpdate(marketType, window[cacheKey]);
@@ -958,15 +978,18 @@
         }
       }
       if (mktAction === "get.jobs") {
-        var jobsMarketId = window.__cor3CurrentMarketFetch;
+        var jobsMarketId = matchMarketJobsReply(socket, payload.data);
+        if (!jobsMarketId) return;
         var jobsType = resolveMarketType(jobsMarketId);
         var jobsCacheKey = marketCacheKey(jobsType);
         if (window[jobsCacheKey]) {
           window[jobsCacheKey].jobs = payload.data.jobs || [];
           window[jobsCacheKey].recentJobs = payload.data.recentJobs || [];
           window[jobsCacheKey].nextJobsResetAt = payload.data.nextJobsResetAt || window[jobsCacheKey].nextJobsResetAt;
+          const jobsReadId = marketJobsReadSerial = Math.max(Date.now(), marketJobsReadSerial + 1);
+          window[jobsCacheKey].relayJobsReadId = jobsReadId;
           postMarketUpdate(jobsType, window[jobsCacheKey]);
-          window.postMessage({ type: "COR3_MARKET_FETCH_COMPLETE", marketId: jobsMarketId, marketType: jobsType }, "*");
+          window.postMessage({ type: "COR3_MARKET_FETCH_COMPLETE", marketId: jobsMarketId, marketType: jobsType, jobsReadId }, location.origin);
         }
       }
       if (!mktAction && mkt && mkt.marketName) {
@@ -1217,7 +1240,7 @@
               mercenaryCallsign: expedition.mercenary ? expedition.mercenary.callsign : "Unknown",
               locationName: expedition.locationName || "",
               zoneName: expedition.zoneName || "",
-              riskScore: expedition.riskScore || 0,
+              riskScore: msg.riskScore ?? expedition.riskScore,
               messageId: msg.id,
               content: msg.content,
               decisionOptions: msg.decisionOptions,
@@ -2266,6 +2289,7 @@
       tryNextPath();
     });
   }
+  const activeMercReads = new Set();
   var stableReads = Cor3ReadRuntimeFactory.create({
     allowed:cor3AutomationAllowed,epoch:()=>window.__cor3MasterGate.snapshot().generation+":"+getMarketRefreshAbortId(),send:wsSend,
     listen:fn=>{const handler=event=>{if(event.source===window&&event.origin===location.origin&&event.data)fn(event.data);};window.addEventListener("message",handler);return ()=>window.removeEventListener("message",handler);},
@@ -2273,7 +2297,15 @@
     pickConfig:(locations,type)=>{const config=window.__cor3PickLocationConfig(locations);window[type==='usol'?'__cor3UsolExpConfigIds':'__cor3ExpConfigIds']=config;return config;},
     trackMarket:trackMarketRequest,unreachable:type=>window.__cor3IsMarketUnreachable(type),
     setPending:(type,value)=>{if(type!=='home')window['__cor3'+type[0].toUpperCase()+type.slice(1)+'MarketPending']=value;},
-    notify:state=>{if(state.key==='merc:home')window.__cor3CoreMercFetchInProgress=['loading','blocked'].includes(state.status);if(state.key==='merc:usol')window.__cor3UsolMercFetchInProgress=['loading','blocked'].includes(state.status);window.postMessage({type:'COR3_READ_STATE',...state},location.origin);}
+    notify:state=>{
+      if(state.key.startsWith('merc:')){
+        if(state.status==='loading'||state.status==='blocked') activeMercReads.add(state.key);
+        else activeMercReads.delete(state.key);
+        window.__cor3CoreMercFetchInProgress=activeMercReads.has('merc:home')||activeMercReads.has('merc:home:roster');
+        window.__cor3UsolMercFetchInProgress=activeMercReads.has('merc:usol')||activeMercReads.has('merc:usol:roster');
+      }
+      window.postMessage({type:'COR3_READ_STATE',...state},location.origin);
+    }
   });
   var stableMarketSpecs = {
     home:{marketType:'home',marketId:HOME_MARKET_ID},
@@ -2336,10 +2368,12 @@
       }
     };
     window.addEventListener("message", onExpData);
-    enterRooms(["expeditions"]).then(function() {
+    const roomStamp = packetStamp();
+    enterRooms(["expeditions"]).then(function(ready) {
+      if (!ready) { window.removeEventListener("message", onExpData); return; }
       setTimeout(function() {
         window.removeEventListener("message", onExpData);
-        if (!gotData) {
+        if (!gotData && packetValid(roomStamp, '42["event",{"event":{"name":"expeditions","action":"get.active"}}]')) {
           var msg = '42["event",{"event":{"name":"expeditions","action":"get.active"}}]';
           wsSend(msg);
         }
@@ -2367,8 +2401,8 @@
     wsSend(msg);
     return true;
   };
-  window.__cor3RequestMercenaries = function(marketId,callback) {
-    return stableReads.mercenaries({marketType:'home',marketId:marketId||HOME_MARKET_ID,mercType:'COR3_WS_MERCENARIES',configType:'COR3_WS_EXPEDITION_CONFIG'},callback);
+  window.__cor3RequestMercenaries = function(marketId,callback,rosterOnly=false) {
+    return stableReads.mercenaries({rosterOnly,marketType:'home',marketId:marketId||HOME_MARKET_ID,mercType:'COR3_WS_MERCENARIES',configType:'COR3_WS_EXPEDITION_CONFIG'},callback);
   };
   window.__cor3RequestExpeditionConfig = function(marketId) {
     var mid = marketId || HOME_MARKET_ID;
@@ -2378,10 +2412,17 @@
     return true;
   };
   window.__cor3PendingMercConfigures = [];
-  window.__cor3RequestMercConfigure = function(mercenaryId, marketId, locationConfigId, zoneConfigId, goalId, hasInsurance) {
+  window.__cor3RequestMercConfigure = function(mercenaryId, marketId, locationConfigId, zoneConfigId, goalId, hasInsurance, onNotSent) {
     var mid = marketId || HOME_MARKET_ID;
     console.log("[COR3 Helper] Requesting configure for mercenary:", mercenaryId);
-    window.__cor3PendingMercConfigures.push(mercenaryId);
+    const pending = {mercenaryId};
+    window.__cor3PendingMercConfigures.push(pending);
+    const discard = () => {
+      const index = window.__cor3PendingMercConfigures.indexOf(pending);
+      if (index < 0) return;
+      window.__cor3PendingMercConfigures.splice(index, 1);
+      onNotSent?.();
+    };
     var data = {
       mercenaryId,
       marketId: mid,
@@ -2391,11 +2432,12 @@
       hasInsurance: hasInsurance !== void 0 ? !!hasInsurance : !!window.__cor3MercHasInsurance
     };
     var msg = '42["event",{"event":{"name":"expeditions","action":"configure"},"data":' + JSON.stringify(data) + "}]";
-    const sent=wsSend(msg);
-    if(!sent){const index=window.__cor3PendingMercConfigures.lastIndexOf(mercenaryId);if(index>=0)window.__cor3PendingMercConfigures.splice(index,1);return false;}
+    let uncertain = false;
+    const sent = wsSend(msg, discard, () => { uncertain = true; });
+    if (!sent && !uncertain) { discard(); return false; }
     return true;
   };
-  window.__cor3RequestUsolMercenaries = callback=>stableReads.mercenaries({...stableMarketSpecs.usol,mercType:'COR3_WS_USOL_MERCENARIES',configType:'COR3_WS_USOL_EXPEDITION_CONFIG'},callback);
+  window.__cor3RequestUsolMercenaries = (callback,rosterOnly=false)=>stableReads.mercenaries({rosterOnly,...stableMarketSpecs.usol,mercType:'COR3_WS_USOL_MERCENARIES',configType:'COR3_WS_USOL_EXPEDITION_CONFIG'},callback);
   var expeditionLaunchPending=false,expeditionLaunchSerial=0;
   window.__cor3LaunchExpedition = function(input) {
     if(expeditionLaunchPending||!cor3AutomationAllowed())return;
@@ -3082,7 +3124,7 @@
     const steps=[
       ['home',cb=>window.__cor3RequestMarket(cb)],['dark',cb=>window.__cor3RequestDarkMarket(cb)],
       ['soyuz',cb=>window.__cor3RequestSoyuzMarket(cb)],['usol',cb=>window.__cor3RequestUsolMarket(cb)],
-      ['core-merc',cb=>window.__cor3RequestMercenaries(null,cb)],['usol-merc',cb=>window.__cor3RequestUsolMercenaries(cb)]
+      ['core-merc',cb=>window.__cor3RequestMercenaries(null,cb,true)],['usol-merc',cb=>window.__cor3RequestUsolMercenaries(cb,true)]
     ];
     const next=()=>{
       if(!valid()){finish('cancelled');return;}
@@ -3707,15 +3749,15 @@
       }
       if (event.data && event.data.type === "COR3_REQUEST_MERCENARIES") {
         window.__cor3RequestMercenaries(null, function() {
-          window.postMessage({ type: "COR3_CORE_MERCS_DONE" }, "*");
+          if(!event.data.rosterOnly)window.postMessage({ type: "COR3_CORE_MERCS_DONE" }, "*");
           if(event.data.networkTicket)window.postMessage({type:"COR3_NETWORK_DONE",networkTicket:event.data.networkTicket},location.origin);
-        });
+        },event.data.rosterOnly===true);
       }
       if (event.data && event.data.type === "COR3_REQUEST_USOL_MERCENARIES") {
         window.__cor3RequestUsolMercenaries(function() {
-          window.postMessage({ type: "COR3_USOL_MERCS_DONE" }, "*");
+          if(!event.data.rosterOnly)window.postMessage({ type: "COR3_USOL_MERCS_DONE" }, "*");
           if(event.data.networkTicket)window.postMessage({type:"COR3_NETWORK_DONE",networkTicket:event.data.networkTicket},location.origin);
-        });
+        },event.data.rosterOnly===true);
       }
       if (event.data && event.data.type === "COR3_REQUEST_EXPEDITION_CONFIG") {
         window.__cor3RequestExpeditionConfig();
@@ -3858,10 +3900,7 @@
 
   window.__cor3MasterGate.onStop(() => {
     window.__cor3ResetInitialFetch();
-    wsSendQueue = [];
-    wsSendFlushTimer = null;
     pendingRetryOps = [];
-    _ceCbs.length = 0;
     bumpMarketRefreshAbortId();
   });
 

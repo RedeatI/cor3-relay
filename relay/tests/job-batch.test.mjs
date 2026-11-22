@@ -19,6 +19,73 @@ test('stale markets, completed history, locks and disabled types are excluded',(
 test('account revocation abandons the batch and cannot start a different account task',async()=>{const f=fixture();await f.manager.begin(f.scope());await flush();f.revoke();await f.next();assert.equal(f.manager.status(f.scope()).phase,'cancelled');assert.equal(f.calls.filter(x=>x.action==='startAutoJobs').length,1);});
 test('stop remains pending until the executor actually finishes',async()=>{const f=fixture();await f.manager.begin(f.scope());await flush();await f.manager.stop(f.scope());assert.equal(f.manager.status(f.scope()).phase,'cancelling');assert.equal(f.manager.status(f.scope()).ready,false);await f.next(1000,()=>{f.receipt().execution.finishedAt=f.now();f.data.autoJobsRunning=false;f.queue.active=null;});assert.equal(f.manager.status(f.scope()).phase,'cancelled');assert.equal(f.manager.status(f.scope()).ready,true);});
 test('completion never grants a handoff while another queued operation owns the endpoint',async()=>{const f=fixture();await f.manager.begin(f.scope());await flush();await f.next(1000,()=>{f.receipt().execution.finishedAt=f.now();f.data.autoJobsRunning=false;f.queue.active='auto-daily';f.data.autoJobsTracker[0].status='done';});assert.equal(f.manager.status(f.scope()).phase,'complete');assert.equal(f.manager.status(f.scope()).ready,false);});
+test('an expired execution lease stays visible without releasing or replaying the active batch',async()=>{
+ const f=fixture();await f.manager.begin(f.scope());await flush();
+ await f.next(300001,()=>{f.queue.blocked='lease-expired';});
+ const expired=f.manager.status(f.scope());
+ assert.equal(expired.phase,'running');
+ assert.equal(expired.leaseExpired,true);
+ assert.equal(expired.ready,false);
+ await assert.rejects(f.manager.begin(f.scope()),/RUNNING/);
+ assert.equal(f.calls.filter(x=>x.action==='startAutoJobs').length,1);
+ await f.next(1000,()=>{
+  f.receipt().execution.finishedAt=f.now();
+  f.data.autoJobsRunning=false;
+  f.data.autoJobsTracker[0].status='skipped';
+  f.queue.active=null;f.queue.blocked=null;
+ });
+ const complete=f.manager.status(f.scope());
+ assert.equal(complete.phase,'complete');
+ assert.equal(complete.leaseExpired,false);
+ assert.equal(complete.summary.skipped,1);
+});
+test('a confirmed missing game loadout fails without extra requests, while an unread loadout is inconclusive',async()=>{
+ const code=src('auto-job-solver.js');
+ const loadout={ownedSoftware:[{id:'incompatible-software'}],equippedSoftware:[]};
+ let current=loadout;
+ const c=vm.createContext({
+  log(){},invalidateLoadoutCache(){},getLoadoutData:async()=>current,
+  getServerTypeName:()=> 'synthetic',findHackSoftwareForServerType:()=>[],
+  sendCmd:()=>assert.fail('must not send another command for a missing prerequisite')
+ });
+ vm.runInContext(code.slice(code.indexOf('  async function tryLoadoutSwapForError('),code.indexOf('  function jobLabel(')),c);
+ const trySwap=()=>c.tryLoadoutSwapForError('sai-hack-impossible',{serverId:'synthetic'});
+ await assert.rejects(trySwap(),{code:'JOB_LOADOUT_UNAVAILABLE'});
+ current={equippedSoftware:[]};
+ assert.equal(await trySwap(),false);
+ current=null;
+ assert.equal(await trySwap(),false);
+});
+test('a confirmed missing game prerequisite excludes repeated nodes and preserves independent alternatives',async()=>{
+ const code=src('auto-job-solver.js');
+ const part=code.slice(code.indexOf('  async function stepSetEndpoint('),code.indexOf('  async function stepLogin('));
+ const node=id=>({id,name:id}),target=node('target');
+ const missing=Object.assign(Error('No compatible game software is available.'),{code:'JOB_LOADOUT_UNAVAILABLE'});
+ async function run(lastError,includeAlternative=true){
+  const paths=[[node('missing'),target],[node('redundant'),node('missing'),target]];
+  if(includeAlternative)paths.push([node('alternate'),target]);
+  const endpointCalls=[],checks=[];
+  const c=vm.createContext({
+   state:{},log(){},getServerNameById:id=>id,fetchMapData:async()=>{},
+   serverMap:{isReady:()=>true,findAllPaths:()=>paths,findBestReachablePath:()=>paths[0],getServer:()=>null},
+   checkPathMaintenance:async()=>({blocked:false}),delay:async()=>{},humanDelay:()=>0,
+   _sendSetEndpoint:async id=>{endpointCalls.push(id);return {unreachable:id==='target'&&endpointCalls.length===1};},
+   stepLogin:async id=>{checks.push(id);if(id==='missing')throw missing;if(lastError)throw lastError;}
+  });
+  vm.runInContext(part,c);
+  return {result:c.stepSetEndpoint('target'),checks,endpointCalls};
+ }
+ const available=await run();
+ await available.result;
+ assert.deepEqual(available.checks,['missing','alternate']);
+ assert.deepEqual(available.endpointCalls,['target','missing','alternate','target']);
+ const none=await run(null,false);
+ await assert.rejects(none.result,{code:'JOB_LOADOUT_UNAVAILABLE'});
+ assert.deepEqual(none.checks,['missing']);
+ const mixed=await run(Error('Temporary response failure'));
+ await assert.rejects(mixed.result,/still unreachable/);
+ assert.deepEqual(mixed.checks,['missing','alternate']);
+});
 test('late tracker persistence is observed before handing the thread back',async()=>{const f=fixture();await f.manager.begin(f.scope());await flush();await f.next(1000,()=>{f.receipt().execution.finishedAt=f.now();f.data.autoJobsRunning=false;f.queue.active=null;});assert.equal(f.manager.status(f.scope()).phase,'finishing');assert.equal(f.manager.status(f.scope()).ready,false);await f.next(500,()=>f.data.autoJobsTracker[0].status='done');assert.equal(f.manager.status(f.scope()).phase,'complete');});
 function injectionFixture(){const hooks=new Set(),scripts=[],timers=new Map();let n=0;const w={addEventListener:(_e,f)=>hooks.add(f),removeEventListener:(_e,f)=>hooks.delete(f)};
  const c=vm.createContext({window:w,location:{origin:'https://cor3.gg'},cor3AutomationAllowed:()=>true,chrome:{runtime:{getURL:p=>p}},crypto:{getRandomValues:a=>a.fill(++n)},setTimeout:f=>{const id=++n;timers.set(id,f);return id;},clearTimeout:id=>timers.delete(id),document:{createElement:()=>({dataset:{},remove(){}}),head:{appendChild:s=>scripts.push(s)}}});const code=src('content.js');vm.runInContext('var autoJobSolverInjected=false,autoJobSolverPromise=null;'+code.slice(code.indexOf('  function injectAutoJobSolver()'),code.indexOf('  var autoValuableSellerInjected')),c);return {c,hooks,scripts,timers,ready:ticket=>{for(const f of [...hooks])f({source:w,origin:'https://cor3.gg',data:{type:'COR3_AUTOJOB_ENGINE_READY',ticket}});}};

@@ -63,116 +63,54 @@
       window.postMessage({ type: messageType, cmd, data: data || {} }, "*");
     };
   }
-  var _mcChannel = typeof MessageChannel !== "undefined" ? new MessageChannel() : null;
-  var _mcCallbacks = [];
-  if (_mcChannel) {
-    _mcChannel.port1.onmessage = function() {
-      var cbs = _mcCallbacks.slice();
-      _mcCallbacks.length = 0;
-      for (var i = 0; i < cbs.length; i++) cbs[i]();
-    };
-  }
-  function nextTick(fn) {
-    if (_mcChannel) {
-      _mcCallbacks.push(fn);
-      _mcChannel.port2.postMessage(0);
-    } else {
-      setTimeout(fn, 0);
-    }
-  }
-  var _safeTimeoutId = 0;
-  var _safeTimeouts = {};
+
   function safeTimeout(fn, ms) {
-    var id = ++_safeTimeoutId;
-    var target = Date.now() + ms;
-    _safeTimeouts[id] = true;
-    function tick() {
-      if (!_safeTimeouts[id]) return;
-      if (Date.now() >= target) {
-        delete _safeTimeouts[id];
-        fn();
-        return;
-      }
-      var rem = target - Date.now();
-      if (rem > 200) {
-        setTimeout(function() {
-          nextTick(tick);
-        }, Math.min(rem - 50, 1e3));
-      } else {
-        nextTick(tick);
-      }
-    }
-    nextTick(tick);
-    return id;
+    return setTimeout(fn, ms);
   }
   function safeClearTimeout(id) {
-    delete _safeTimeouts[id];
+    clearTimeout(id);
   }
   function createDelay(abortFlagFn) {
     return function delay2(ms) {
-      return new Promise(function(resolve, reject) {
-        var target = Date.now() + ms;
+      return new Promise((resolve, reject) => {
+        const deadline = Date.now() + ms;
         function check() {
-          if (abortFlagFn && abortFlagFn()) {
-            reject(new Error("Aborted"));
-            return;
-          }
-          if (Date.now() >= target) {
-            resolve();
-            return;
-          }
-          var remaining = target - Date.now();
-          if (remaining > 200) {
-            setTimeout(function() {
-              nextTick(check);
-            }, Math.min(remaining - 50, 1e3));
-          } else {
-            nextTick(check);
-          }
+          if (abortFlagFn?.()) { reject(new Error("Aborted")); return; }
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) { resolve(); return; }
+          setTimeout(check, Math.min(remaining, 1000));
         }
-        nextTick(check);
+        check();
       });
     };
   }
   function createWaitForEvent(abortFlagFn) {
     return function waitForEvent2(eventType, timeoutMs, predicate) {
-      timeoutMs = timeoutMs || 15e3;
-      return new Promise(function(resolve, reject) {
-        var done = false;
-        var deadline = Date.now() + timeoutMs;
+      return new Promise((resolve, reject) => {
+        const deadline = Date.now() + (timeoutMs || 15000);
+        let timer;
+        function cleanup() {
+          clearTimeout(timer);
+          window.removeEventListener("message", handler);
+        }
         function handler(evt) {
-          if (evt.data && evt.data.type === eventType && (!predicate || predicate(evt.data))) {
-            if (done) return;
-            done = true;
-            window.removeEventListener("message", handler);
-            resolve(evt.data);
+          if (evt.data?.type !== eventType || (predicate && !predicate(evt.data))) return;
+          cleanup();
+          if (abortFlagFn?.()) reject(new Error("Aborted"));
+          else resolve(evt.data);
+        }
+        function check() {
+          const remaining = deadline - Date.now();
+          const aborted = abortFlagFn?.();
+          if (aborted || remaining <= 0) {
+            cleanup();
+            reject(new Error(aborted ? "Aborted" : "Timeout waiting for " + eventType));
+            return;
           }
+          timer = setTimeout(check, Math.min(remaining, 1000));
         }
         window.addEventListener("message", handler);
-        function checkTimeout() {
-          if (done) return;
-          if (abortFlagFn && abortFlagFn()) {
-            done = true;
-            window.removeEventListener("message", handler);
-            reject(new Error("Aborted"));
-            return;
-          }
-          if (Date.now() >= deadline) {
-            done = true;
-            window.removeEventListener("message", handler);
-            reject(new Error("Timeout waiting for " + eventType));
-            return;
-          }
-          var remaining = deadline - Date.now();
-          if (remaining > 200) {
-            setTimeout(function() {
-              nextTick(checkTimeout);
-            }, Math.min(remaining - 50, 1e3));
-          } else {
-            nextTick(checkTimeout);
-          }
-        }
-        nextTick(checkTimeout);
+        check();
       });
     };
   }
@@ -1483,6 +1421,11 @@
         log("Loadout: cannot determine server type for " + serverId, "warn");
         return false;
       }
+      var hackCandidates = findHackSoftwareForServerType(allSw, serverTypeName);
+      if (hackCandidates.length === 0) {
+        if (!Array.isArray(loadout.ownedSoftware) || !Array.isArray(loadout.equippedSoftware)) return false;
+        throw Object.assign(new Error("No compatible game software is available."), { code: "JOB_LOADOUT_UNAVAILABLE" });
+      }
       var serverDefenceRate = 0;
       try {
         sendCmd("get.login.status", { serverId });
@@ -1491,11 +1434,6 @@
           serverDefenceRate = loginStatus.data.serverDefenceRate;
         }
       } catch (e) {
-      }
-      var hackCandidates = findHackSoftwareForServerType(allSw, serverTypeName);
-      if (hackCandidates.length === 0) {
-        log("Loadout: no hack software available for " + serverTypeName, "warn");
-        return false;
       }
       var hackPlan = findBestSoftwareForAbility(loadout, hackCandidates, "HACK", serverDefenceRate, serverTypeName);
       return await applyPlan(hackPlan, "HACK", serverTypeName, serverDefenceRate);
@@ -1655,9 +1593,12 @@
       var pathThroughSuccess = false;
       var triedPathCount = 0;
       var pathsToTry = allPaths.length > 0 ? allPaths : [path];
+      const unavailableNodes = new Set();
+      let loadoutError = null, otherPathFailure = false;
       for (var pathIdx = 0; pathIdx < pathsToTry.length; pathIdx++) {
         var currentPath = pathsToTry[pathIdx];
         if (currentPath.length <= 1) continue;
+        if (currentPath.slice(0, -1).some(node => unavailableNodes.has(node.id))) continue;
         if (triedPathCount > 0) await fetchMapData(true);
         if (serverMap.isReady()) {
           var targetSrv = serverMap.getServer(serverId);
@@ -1680,6 +1621,7 @@
           log("\u26A1 Path-through: setting endpoint to " + intermediate.name + " (" + (pi + 1) + "/" + (currentPath.length - 1) + ")");
           var intResult = await _sendSetEndpoint(intermediate.id);
           if (intResult.unreachable) {
+            otherPathFailure = true;
             var intMsg = intermediate.name + " unreachable on this path";
             log("\u26A1 Path-through: " + intMsg + " \u2014 will try next path", "warn");
             pathFailed = true;
@@ -1689,6 +1631,13 @@
           try {
             await stepLogin(intermediate.id);
           } catch (e) {
+            if (state.abortFlag || e.message === "Aborted") throw e;
+            if (e.code === "JOB_LOADOUT_UNAVAILABLE") {
+              unavailableNodes.add(intermediate.id);
+              loadoutError = e;
+            } else {
+              otherPathFailure = true;
+            }
             log("\u26A1 Path-through: login/hack failed on " + intermediate.name + ": " + e.message + " \u2014 will try next path", "warn");
             pathFailed = true;
             break;
@@ -1702,6 +1651,7 @@
           pathThroughSuccess = true;
           break;
         }
+        otherPathFailure = true;
         if (raceResult.errorMsg === "server-in-maintenance") {
           var maintCheck = serverMap.isReady() ? serverMap.getServer(serverId) : null;
           var maintRemaining = maintCheck && maintCheck.maintenanceEndsAt ? new Date(maintCheck.maintenanceEndsAt).getTime() - Date.now() : 0;
@@ -1717,6 +1667,7 @@
           var fMins = Math.ceil(finalCheck.remainingMs / 6e4);
           throw new Error(endpointLabel + " still unreachable after " + triedPathCount + " path(s) (" + finalCheck.blockerName + " in maintenance, ~" + fMins + "m remaining)");
         }
+        if (loadoutError && !otherPathFailure) throw loadoutError;
         throw new Error(endpointLabel + " still unreachable after " + triedPathCount + " path attempt(s)");
       }
     }
@@ -3082,7 +3033,11 @@
             updateTracker();
             break;
           }
-          if (e.message && (e.message.includes("token-expired") || e.message.includes("invalid-access-token"))) {
+          if (e.code === "JOB_LOADOUT_UNAVAILABLE") {
+            job.status = "skipped";
+            job.error = errText;
+            log("Job skipped: " + job.name + " \u2014 " + errText, "warn");
+          } else if (e.message && (e.message.includes("token-expired") || e.message.includes("invalid-access-token"))) {
             job.status = "skipped";
             job.error = errText;
             state.abortFlag = true;

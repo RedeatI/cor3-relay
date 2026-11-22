@@ -7,13 +7,25 @@
  const same=(a,b)=>a&&b&&a.accountId===b.accountId&&a.documentId===b.documentId;
  const error=code=>Object.assign(Error(code),{code});
  const resolveTypes=value=>Array.isArray(value)?types.filter(x=>value.includes(x)):[...types];
+ function verifiedJobsAt(market,cacheAt,proof,documentId,now){
+  if(!market||!Array.isArray(market.jobs)||proof?.documentId!==documentId||proof?.status!=='ok'||
+     !Number.isFinite(proof.at)||proof.at>now+1000)return null;
+  // The jobs reply and its receipt share an ID. Later options or lot updates
+  // keep that ID, even though their generic cache timestamp changes.
+  if(proof.jobsReadId!==undefined||market.relayJobsReadId!==undefined)
+   return Number.isSafeInteger(proof.jobsReadId)&&proof.jobsReadId>0&&proof.jobsReadId===market.relayJobsReadId?proof.at:null;
+  // Older cached receipts have no ID. Preserve the narrow timestamp check.
+  return Number.isFinite(cacheAt)&&cacheAt<=now+1000&&Math.abs(cacheAt-proof.at)<=2000?Math.min(cacheAt,proof.at):null;
+ }
  function collect(data,selected,after,now,documentId){
   const allowed=new Set(resolveTypes(selected)),history=data.autoJobsCompletedResults||[],done=new Set(history.filter(x=>x.status==='done').map(x=>x.jobId));
   const locks=new Map((data.autoJobsLockedJobs||[]).map(x=>[x.jobId,new Date(x.lockExpiresAt).getTime()]));
   const jobs=[],seen=new Set(),freshMarkets=[];
   for(const [marketKey,m]of Object.entries(markets)){
-   const md=data[m.key],proof=data.marketReadProofs?.[marketKey];if(!md||!Number.isFinite(data[m.at])||data[m.at]<after||data[m.at]>now+1000)continue;
-   if(documentId&&(!proof||proof.documentId!==documentId||proof.status!=='ok'||proof.at<after||proof.at>now+1000))continue;freshMarkets.push(marketKey);
+   const md=data[m.key];
+   const verifiedAt=documentId?verifiedJobsAt(md,data[m.at],data.marketReadProofs?.[marketKey],documentId,now):data[m.at];
+   if(!md||!Number.isFinite(verifiedAt)||verifiedAt<after||verifiedAt>now+1000)continue;
+   freshMarkets.push(marketKey);
    for(const [rows,taken]of [[md.recentJobs||[],true],[md.jobs||[],false]])for(const row of rows){
     const name=row.name||row.type,id=row.id;
     const claimOnly=taken&&row.status==='TAKEN'&&row.canComplete===true;
@@ -91,7 +103,7 @@
     if(!observed&&!execution.cancelled&&!q.waiting?.some(t=>t.id===execution.ticket&&t.type==='auto-jobs'))throw error('PAGE_JOB_START_UNCONFIRMED');
     const ownActive=q.running?.id===execution.ticket&&q.active==='auto-jobs';
     const slowAck=ownActive&&!execution.acceptedAt&&!data.autoJobsRunning&&now()-(execution.dispatchedAt||execution.startedAt)>startMs;
-    update(ctx,{phase:ctx.cancel?'cancelling':execution.waitingFor==='minigame'?'waiting-minigame':!observed?'queued':slowAck?'waiting-ack':data.autoJobsRunning||ownActive?'running':'finishing',done,processed,results:rows.map(x=>({jobId:x.jobId,name:x.name||x.type||'',serverName:x.serverName||'',status:x.status,error:root.Cor3RunLog?.text(x.error||'').slice(0,320)||''})),current:observed?rows.find(x=>x.status==='running')?.name||null:null,waitingFor:observed?null:q.blocked||q.active||'queue'});
+    update(ctx,{phase:ctx.cancel?'cancelling':execution.waitingFor==='minigame'?'waiting-minigame':!observed?'queued':slowAck?'waiting-ack':data.autoJobsRunning||ownActive?'running':'finishing',leaseExpired:ownActive&&q.blocked==='lease-expired',done,processed,results:rows.map(x=>({jobId:x.jobId,name:x.name||x.type||'',serverName:x.serverName||'',status:x.status,error:root.Cor3RunLog?.text(x.error||'').slice(0,320)||''})),current:observed?rows.find(x=>x.status==='running')?.name||null:null,waitingFor:observed?null:q.blocked||q.active||'queue'});
     if(execution.error){update(ctx,{reason:execution.reason});throw error(execution.error);}
     if(execution.cancelled||execution.finishedAt){
      if(ownActive){await sleep(500);continue;}
@@ -106,5 +118,5 @@
   async function stop(expected){const scope=await check(expected),ctx=active;if(!ctx||!same(ctx.scope,scope))throw error('PAGE_JOB_NOT_RUNNING');ctx.cancel=true;update(ctx,{phase:'cancelling'});if(!proof(ctx)){finish(ctx,'cancelled');return {phase:'requested'};}await once(ctx,'cancelJobBatch',{});return {phase:'requested'};}
   return Object.freeze({begin,beginAfterRefresh:(scope,fresh)=>begin(scope,undefined,fresh),stop,status:snapshot,publish,subscribe:fn=>{listeners.add(fn);publish();return()=>listeners.delete(fn);}});
  }
- root.Cor3JobBatchFactory=Object.freeze({create,collect,resolveTypes,types,markets,keys});
+ root.Cor3JobBatchFactory=Object.freeze({create,collect,verifiedJobsAt,resolveTypes,types,markets,keys});
 })(globalThis);

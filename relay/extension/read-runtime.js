@@ -8,8 +8,8 @@
    old=runs.get(key);if(old){if(typeof callback==='function')old.callbacks.push(callback);return null;}
    const captured=epoch(),cleanups=new Set(),callbacks=typeof callback==='function'?[callback]:[];let closed=false;
    const valid=()=>!closed&&allowed()&&epoch()===captured;
-   const report=(status,code)=>notify({key,status,code});
-   const finish=result=>{if(closed)return;const effective=valid()?result:{status:'cancelled',code:'SCOPE_CHANGED'};closed=true;for(const cleanup of cleanups)cleanup();cleanups.clear();if(runs.get(key)===op)runs.delete(key);report(effective.status,effective.code||'READ_COMPLETE');for(const cb of callbacks.splice(0)){try{cb(effective);}catch{}}};
+   const report=(status,code,details={})=>notify({key,status,code,...details});
+   const finish=result=>{if(closed)return;const effective=valid()?result:{status:'cancelled',code:'SCOPE_CHANGED'};closed=true;for(const cleanup of cleanups)cleanup();cleanups.clear();if(runs.get(key)===op)runs.delete(key);report(effective.status,effective.code||'READ_COMPLETE',Number.isSafeInteger(effective.jobsReadId)?{jobsReadId:effective.jobsReadId}:{});for(const cb of callbacks.splice(0)){try{cb(effective);}catch{}}};
    const later=(fn,ms)=>{let id;const cleanup=()=>clearTimer(id);cleanups.add(cleanup);id=setTimer(()=>{cleanups.delete(cleanup);if(!valid()){finish({status:'cancelled',code:'SCOPE_CHANGED'});return;}fn();},ms);return cleanup;};
    const on=(predicate,fn)=>{const remove=listen(data=>{if(!valid()){finish({status:'cancelled',code:'SCOPE_CHANGED'});return;}if(predicate(data))fn(data);});cleanups.add(remove);return ()=>{cleanups.delete(remove);remove();};};
    const packet=(name,action,data)=>{if(!valid()){finish({status:'cancelled',code:'SCOPE_CHANGED'});return false;}const ok=send('42'+JSON.stringify(['event',{event:{name,action},data}]));if(ok===false){finish({status:'unavailable',code:'TRANSPORT_UNAVAILABLE'});return false;}return true;};
@@ -32,7 +32,7 @@
    const op=begin('market:'+spec.marketType+':'+(spec.jobsOnly?'jobs':'all'),callback);if(!op)return true;
    endpoint(op,spec,()=>{
     trackMarket(spec.marketId);
-    const remove=op.on(d=>d.type==='COR3_MARKET_FETCH_COMPLETE'&&d.marketType===spec.marketType&&(!d.marketId||d.marketId===spec.marketId),()=>op.finish({status:'ok'}));
+    const remove=op.on(d=>d.type==='COR3_MARKET_FETCH_COMPLETE'&&d.marketType===spec.marketType&&(!d.marketId||d.marketId===spec.marketId),d=>op.finish({status:'ok',jobsReadId:d.jobsReadId}));
     op.later(()=>{remove();op.finish({status:'partial',code:'MARKET_DATA_TIMEOUT'});},15000);
     if(!op.packet('market','get.options',{marketId:spec.marketId}))return;
     if(!spec.jobsOnly&&!op.packet('market','get.lots',{marketId:spec.marketId}))return;
@@ -40,7 +40,7 @@
    });return true;
   }
   function mercenaries(spec,callback){
-   const op=begin('merc:'+spec.marketType,callback);if(!op)return true;
+   const op=begin('merc:'+spec.marketType+(spec.rosterOnly?':roster':''),callback);if(!op)return true;
    endpoint(op,spec,()=>{
     let mercs=null,config=null,haveMercs=false,haveConfig=false,started=false;
     const timeout=op.later(()=>op.finish({status:'partial',code:'MERC_DATA_TIMEOUT'}),30000);
@@ -50,6 +50,7 @@
      if(started||!haveMercs||!haveConfig)return;started=true;remove();timeout();
      const list=Array.isArray(mercs)?mercs:Array.isArray(mercs?.mercenaries)?mercs.mercenaries:null;
      if(!list){op.finish({status:'partial',code:'MERC_DATA_INVALID'});return;}
+     if(spec.rosterOnly){op.finish({status:'ok'});return;}
      const ids=[...new Set([...list,...(mercs?.eliteSlots||[]).map(x=>x?.mercenary)].filter(x=>x?.id).map(x=>x.id))];
      if(!ids.length){op.finish({status:'ok'});return;}
      if(!config?.locationConfigId||!config.zoneConfigId||!config.goalId){op.finish({status:'partial',code:'CONFIG_UNAVAILABLE'});return;}
@@ -63,7 +64,8 @@
        if(blocked)op.report('loading','READ_RESUMED');op.later(next,200);
       });
       const timer=op.later(()=>{blocked=true;op.report('blocked','MERC_CONFIGURE_UNCONFIRMED');},5000);
-      if(configure(mercenaryId,spec.marketId,config.locationConfigId,config.zoneConfigId,config.goalId)===false)op.finish({status:'unavailable',code:'TRANSPORT_UNAVAILABLE'});
+      const notSent=()=>op.finish({status:'unavailable',code:'TRANSPORT_UNAVAILABLE'});
+      if(configure(mercenaryId,spec.marketId,config.locationConfigId,config.zoneConfigId,config.goalId,undefined,notSent)===false)notSent();
      }
      next();
     });

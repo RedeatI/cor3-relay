@@ -6,6 +6,7 @@
  let writeTail=Promise.resolve();
  const serialize=fn=>{const next=writeTail.then(fn,fn);writeTail=next.catch(()=>{});return next;};
  const helper='helperMode';
+ const dailyLockTtlMs=10*60*1000;
  const enabledDefaults=Object.freeze(['autoDecryptEnabled','autoIceWallEnabled','autoSimpleDecryptEnabled','autoUpdateMarkets','autoDailyHackEnabled','autoRunMarketJobsEnabled']);
  const marketKeys=['marketData','darkMarketData','soyuzMarketData','usolMarketData'];
  const summarySources=Object.fromEntries(marketKeys.map(k=>[k+'SummaryV1',k]));
@@ -45,6 +46,82 @@
     if(keys===null){for(const [k,v]of Object.entries(data))if(k.startsWith(prefix))result[k.slice(prefix.length)]=v;for(const k of enabledDefaults)if(!Object.hasOwn(result,k))result[k]=true;}
     else for(const k of keys){const pk=k===helper?helper:prefix+k;if(Object.hasOwn(data,pk))result[k]=data[pk];else if(enabledDefaults.includes(k))result[k]=true;else if(value&&typeof value==='object'&&!Array.isArray(value)&&Object.hasOwn(value,k))result[k]=value[k];}return result;
    }
+   if(op==='appendConsole'){
+    if(child||!Array.isArray(value)||!value.length||value.length>128)throw Error('CENTER_LOG_BATCH');
+    const key=prefix+'cor3_console_logs';
+    const batch=value.map(entry=>{
+     if(!entry||typeof entry.args!=='string'||entry.args.length>2048||!['background','popup','content'].includes(entry.source)
+       ||!['log','warn','error'].includes(entry.level)||typeof entry.timestamp!=='string'||entry.timestamp.length!==24||!Number.isFinite(Date.parse(entry.timestamp)))throw Error('CENTER_LOG_ENTRY');
+     return {timestamp:entry.timestamp,source:entry.source,level:entry.level,args:entry.args};
+    });
+    const saved=(await raw.get(key))[key];
+    if(!binding.isCurrent(b))throw Error('CENTER_STORE_UNBOUND');
+    const cutoff=new Date(Date.now()-8*3600000).toISOString();
+    const history=Array.isArray(saved)?saved:[];
+    let budget=1024*1024;
+    const entries=history.concat(batch);
+    let at=entries.length;
+    while(at>0 && entries.length-at<5000){
+     const row=entries[at-1];
+     if(typeof row?.args!=='string'||row.timestamp<cutoff)break;
+     // Bound UTF-8 storage conservatively even for non-ASCII console output.
+     budget-=120+row.args.length*3;
+     if(budget<0)break;
+     at--;
+    }
+    batch[batch.length-1].batchSize=batch.length;
+    await raw.set({[key]:entries.slice(at)});
+    return {};
+   }
+   if(op==='daily'){
+    if(internal||ui||child||!value||!['acquire','release','schedule'].includes(value.action))throw Error('CENTER_DAILY_SCOPE');
+    const lockKey=prefix+'dailyHackRunLock', enabledKey=prefix+'autoDailyHackEnabled';
+    const enabled=state=>state[helper]!==true&&(!Object.hasOwn(state,enabledKey)||state[enabledKey]===true);
+    if(value.action==='schedule'){
+     if(!Number.isFinite(value.at)||value.at<=0)throw Error('CENTER_DAILY_SCHEDULE');
+     const state=await raw.get([enabledKey,helper]);
+     if(!binding.isCurrent(b))throw Error('CENTER_STORE_UNBOUND');
+     if(!enabled(state))return {scheduled:false};
+     await raw.set({[prefix+'dailyHackNextCheckAt']:value.at});
+     return {scheduled:true};
+    }
+    if(typeof value.owner!=='string'||!/^daily-[0-9]+-[0-9]+-[a-z0-9]{1,24}$/.test(value.owner))throw Error('CENTER_DAILY_OWNER');
+    const state=await raw.get([lockKey,enabledKey,helper]);
+    if(!binding.isCurrent(b))throw Error('CENTER_STORE_UNBOUND');
+    const lock=state[lockKey];
+    const owned=lock?.owner===value.owner&&lock.tabId===b.tabId&&lock.documentId===b.documentId;
+    if(value.action==='release'){
+     if(owned)await raw.remove([lockKey]);
+     return {released:owned};
+    }
+    if(!enabled(state))return {acquired:false,disabled:true};
+    if(owned)return {acquired:true};
+    const now=Date.now();
+    const ageMs=Number.isFinite(lock?.startedAt)?Math.max(0,now-lock.startedAt):dailyLockTtlMs;
+    if(lock&&ageMs<dailyLockTtlMs){
+     const scoped=Number.isSafeInteger(lock.tabId)&&typeof lock.documentId==='string';
+     let ownerGone=scoped&&lock.tabId===b.tabId&&lock.documentId!==b.documentId;
+     if(scoped&&lock.tabId!==b.tabId){
+      try {
+       const tabs=await api.tabs.query({});
+       ownerGone=Array.isArray(tabs)&&tabs.some(tab=>tab.id===b.tabId)&&!tabs.some(tab=>tab.id===lock.tabId);
+      } catch { /* An unreadable tab list leaves the preceding lease in place. */ }
+     }
+     if(!binding.isCurrent(b))throw Error('CENTER_STORE_UNBOUND');
+     if(!ownerGone)return {acquired:false,ageMs,retryInMs:Math.min(120000,dailyLockTtlMs-ageMs)};
+    }
+    await raw.set({[lockKey]:{owner:value.owner,tabId:b.tabId,documentId:b.documentId,startedAt:now}});
+    return {acquired:true};
+   }
+   if(op==='reconcileJobs'){
+    if(internal||ui||child)throw Error('CENTER_STORE_UNBOUND');
+    const runningKey=prefix+'autoJobsRunning', documentKey=prefix+'autoJobsRunDocumentId';
+    const state=await raw.get([runningKey,documentKey]);
+    if(!binding.isCurrent(b))throw Error('CENTER_STORE_UNBOUND');
+    if(state[runningKey]!==true||state[documentKey]===b.documentId)return {cleared:false};
+    await raw.set({[runningKey]:false,[documentKey]:null,[prefix+'autoJobsQueue']:[]});
+    return {cleared:true};
+   }
    if(op==='update'){
     if(!value||!validKey(value.key)||value.key===helper||!value.patch||typeof value.patch!=='object'||Array.isArray(value.patch)||Object.keys(value.patch).length>1000)throw Error('CENTER_STORE_KEYS');
     const pk=prefix+value.key,stored=(await raw.get(pk))[pk];
@@ -56,7 +133,9 @@
    }
    if(op==='set'){
     if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length>1000||!Object.keys(value).every(k=>validKey(k)&&k!==helper))throw Error('CENTER_STORE_KEYS');
-    const values={...value};for(const k of marketKeys)if(Object.hasOwn(value,k))values[k+'SummaryV1']=summarize(value[k])||null;
+    const values={...value};
+    if(typeof value.autoJobsRunning==='boolean')values.autoJobsRunDocumentId=value.autoJobsRunning?b.documentId:null;
+    if(value.autoDailyHackEnabled===false)values.dailyHackNextCheckAt=null;for(const k of marketKeys)if(Object.hasOwn(value,k))values[k+'SummaryV1']=summarize(value[k])||null;
     await raw.set(Object.fromEntries(Object.entries(values).map(([k,v])=>[prefix+k,v])));return {};
    }
    if(op==='remove'){const keys=typeof value==='string'?[value]:value;if(!Array.isArray(keys)||!keys.every(k=>validKey(k)&&k!==helper))throw Error('CENTER_STORE_KEYS');const all=[...keys,...keys.filter(k=>marketKeys.includes(k)).map(k=>k+'SummaryV1')];await raw.remove(all.map(k=>prefix+k));return {};}
@@ -89,6 +168,18 @@
   else{++revision;reads.clear();p=invoke(op,value);}
   p.catch(()=>{});if(typeof callback==='function')p.then(callback,()=>callback(op==='get'?{}:undefined)).catch(()=>{});return p;
  }
+ // Most subscribers only inspect settings. Clone the large rolling log only for readers.
+ function subscriberChanges(mapped){
+  if(!Object.hasOwn(mapped,'cor3_console_logs'))return copy(mapped);
+  const {cor3_console_logs:history,...other}=mapped;
+  const view=copy(other);
+  Object.defineProperty(view,'cor3_console_logs',{enumerable:true,configurable:true,get(){
+   const value=copy(history);
+   Object.defineProperty(view,'cor3_console_logs',{enumerable:true,configurable:true,writable:true,value});
+   return value;
+  },set(value){Object.defineProperty(view,'cor3_console_logs',{enumerable:true,configurable:true,writable:true,value});}});
+  return view;
+ }
  const events={addListener(fn){if(typeof fn==='function')listeners.add(fn);},removeListener(fn){listeners.delete(fn);}};
  api.storage.onChanged.addListener(async(changes,area)=>{
   if(area!=='local')return;
@@ -98,9 +189,9 @@
   const stamp=context();let mapped={};
   try{const scope=await readOnly('scope');if(stamp!==context())return;const prefix='center:'+scope.accountId+':';for(const[k,v]of Object.entries(changes))if(k.startsWith(prefix))mapped[k.slice(prefix.length)]=v;else if(k===helper)mapped[k]=v;}
   catch{if(changes[helper])mapped[helper]=changes[helper];}
-  if(!Object.keys(mapped).length)return;for(const fn of [...listeners])if(listeners.has(fn))try{fn(copy(mapped),'local');}catch{}
+  if(!Object.keys(mapped).length)return;for(const fn of [...listeners])if(listeners.has(fn))try{fn(subscriberChanges(mapped),'local');}catch{}
  });
- root.Cor3CenterStore=Object.freeze({get:(v,cb)=>call('get',v,cb),set:(v,cb)=>call('set',v,cb),update:(key,patch,cb)=>call('update',{key,patch},cb),remove:(v,cb)=>call('remove',v,cb),onChanged:events});
+ root.Cor3CenterStore=Object.freeze({get:(v,cb)=>call('get',v,cb),set:(v,cb)=>call('set',v,cb),update:(key,patch,cb)=>call('update',{key,patch},cb),remove:(v,cb)=>call('remove',v,cb),appendConsole:v=>call('appendConsole',v),daily:v=>call('daily',v),reconcileJobs:()=>call('reconcileJobs'),onChanged:events});
 })(globalThis);
 
 

@@ -148,7 +148,7 @@
    };
    const daily = raw[prefix + 'dailyOpsData'];
    const dailyState = {
-    enabled: raw[prefix + 'autoDailyHackEnabled'] === true,
+    enabled: !Object.hasOwn(raw,prefix + 'autoDailyHackEnabled') || raw[prefix + 'autoDailyHackEnabled'] === true,
     sessionReady: raw[prefix + 'sessionAuthDocumentId'] === documentId,
     sessionReadyAt: Number.isFinite(raw[prefix + 'sessionAuthReadyAt']) ? raw[prefix + 'sessionAuthReadyAt'] : null,
     claimed: typeof daily?.hasClaimedToday === 'boolean' ? daily.hasClaimedToday : null,

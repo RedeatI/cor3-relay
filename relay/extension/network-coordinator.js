@@ -10,14 +10,18 @@
   const info=t=>t?{id:t.id,type:t.type,owner:t.type,priority:t.priority,startedAt:t.startedAt||null,enqueuedAt:t.enqueuedAt}:null;
   function snapshot(){const s=scope();return {accountId:s?.accountId||null,documentId:s?.documentId||null,active:active?.type||null,queued:waiting.map(t=>t.type),running:info(active),waiting:waiting.map(info),lease:active?{owner:active.type,id:active.id,acquiredAt:active.startedAt,expiresAt:active.expiresAt,expired:now()>=active.expiresAt}:null,blocked:active?.fault||(blocked()?'game-busy':null),updatedAt:now()};}
   const changed=()=>{try{onChange(snapshot());}catch{}};
-  function cancel(){epoch++;active=null;waiting=[];changed();}
+  function release(task){
+   active=null;
+   try{task?.onRelease?.();}catch(error){log('queue.cleanup',String(error),{},'warn');}
+  }
+  function cancel(){epoch++;waiting=[];release(active);changed();}
   function pump(){
    if(active){if(!valid(active)){cancel();return;}if(now()>=active.expiresAt&&!active.fault){active.fault='lease-expired';log('queue.timeout','操作超时，保留端点占用等待结束确认',{owner:active.type},'warn');changed();}return;}
-   if(!allowed()||blocked())return;
+   if(!waiting.length||!allowed()||blocked())return;
    waiting=waiting.filter(valid);if(!waiting.length)return;
    const task=waiting.shift();active=task;task.startedAt=now();task.expiresAt=now()+ttlMs;
    log('queue.started','开始操作',{owner:task.type});changed();
-   const context=Object.freeze({id:task.id,valid:()=>active===task&&valid(task),finish:()=>finish(task.type,task.id),renew:()=>renew(task.id),fail:code=>{if(active===task){task.fault=code||'operation-failed';changed();}}});
+   const context=Object.freeze({id:task.id,valid:()=>active===task&&valid(task),finish:()=>finish(task.type,task.id),renew:()=>renew(task.id),onRelease:fn=>{if(active===task)task.onRelease=fn;},fail:code=>{if(active===task){task.fault=code||'operation-failed';changed();}}});
    try{const promise=task.run(context);if(promise?.then)promise.catch(()=>{if(context.valid())context.fail('operation-failed');});}catch{context.fail('operation-failed');}
   }
   function enqueue(type,run,priority=priorities[type]??(type.startsWith("manual-market:")?45:25)){
@@ -26,7 +30,7 @@
    const task={id:String(++serial),type,scope:{...s},epoch,run,priority,enqueuedAt:now()};waiting.push(task);waiting.sort((a,b)=>b.priority-a.priority||Number(a.id)-Number(b.id));
    log('queue.queued','操作已排队',{owner:type});changed();pump();return active===task?'started':'queued';
   }
-  function finish(type,id){if(!active||active.type!==type||active.id!==id||!valid(active))return false;log('queue.finished','操作结束，释放端点',{owner:type});active=null;changed();pump();return true;}
+  function finish(type,id){if(!active||active.type!==type||active.id!==id||!valid(active))return false;log('queue.finished','操作结束，释放端点',{owner:type});release(active);changed();pump();return true;}
   function renew(id){if(!active||active.id!==id||!valid(active)||active.fault||now()>=active.expiresAt)return false;const at=now();active.expiresAt=at+ttlMs;if(at-(active.lastLeaseNoticeAt??active.startedAt)>=ttlMs/2){active.lastLeaseNoticeAt=at;changed();}return true;}
   function keepWaiting(types){waiting=waiting.filter(t=>types.includes(t.type));changed();}
   function cancelQueued(type,id){const at=waiting.findIndex(t=>t.type===type&&t.id===id&&valid(t));if(at<0)return false;waiting.splice(at,1);log('queue.cancelled','取消排队操作',{owner:type});changed();pump();return true;}

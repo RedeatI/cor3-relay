@@ -480,15 +480,29 @@
   function queueMarketRefresh(message,owner="manual-market:"+message.type,onDone,onStart) {
     return _automationEnqueue(owner,task=>{
       _marketRefreshInProgress=true;
-      onStart?.(task);
       const done=event=>{
         if(event.source!==window||event.origin!==location.origin||event.data?.type!=="COR3_NETWORK_DONE"||event.data.networkTicket!==task.id)return;
-        window.removeEventListener("message",done);
         if(!task.valid())return;
-        _marketRefreshInProgress=false;setSeqRefreshRunning(false);onDone?.(task);task.finish();
+        try { onDone?.(task); }
+        finally {
+          task.finish();
+          globalThis.Cor3InPageControls?.wakeAutoMarket?.(0);
+        }
       };
-      window.addEventListener("message",done);
-      window.postMessage({...message,networkTicket:task.id},location.origin);
+      task.onRelease(()=>{
+        window.removeEventListener("message",done);
+        _marketRefreshInProgress=false;
+        setSeqRefreshRunning(false);
+      });
+      try {
+        onStart?.(task);
+        window.addEventListener("message",done);
+        window.postMessage({...message,networkTicket:task.id},location.origin);
+      } catch(error) {
+        // No message was dispatched when postMessage threw synchronously.
+        task.finish();
+        throw error;
+      }
     });
   }
   // src/content/auto-update-markets.js
@@ -564,15 +578,22 @@
   // src/shared/decision-policy.js
   function optionLoot(opt) {
     if (!opt) return 0;
-    const v = opt.lootModifier !== void 0 ? opt.lootModifier : opt.effect ? opt.effect.lootDelta : 0;
+    const v = opt.lootModifier ?? opt.lootDelta ?? opt.effect?.lootDelta ?? 0;
     const n = Number(v);
     return Number.isFinite(n) ? n : 0;
   }
   function optionRisk(opt) {
     if (!opt) return 0;
-    const v = opt.riskModifier !== void 0 ? opt.riskModifier : opt.effect ? opt.effect.riskDelta : 0;
+    const v = opt.riskModifier ?? opt.riskDelta ?? opt.effect?.riskDelta ?? 0;
     const n = Number(v);
     return Number.isFinite(n) ? n : 0;
+  }
+  function decisionRisk(options, ...reported) {
+    for (const risk of reported) if (Number.isFinite(risk)) return risk;
+    for (const opt of options) {
+      if (Number.isFinite(opt?.risk)) return opt.risk - optionRisk(opt);
+    }
+    return 0;
   }
   function scoreOption(opt, overrides) {
     if (!opt) return -Infinity;
@@ -639,12 +660,13 @@
       const merc = result.autoSendMerc || {};
       if (!cor3AutomationAllowed() || !merc.enabled || merc.autoDecide === false) return;
       for (const d of decisions) {
-        if (!d || d.isResolved || !Array.isArray(d.decisionOptions)) continue;
+        if (!d?.messageId || !d.expeditionId || d.isResolved || d.isAutoResolved || d.selectedOption || !Array.isArray(d.decisionOptions)) continue;
         if (contentAutoChosenDecisions.has(d.messageId)) continue;
         if (d.decisionDeadline && new Date(d.decisionDeadline).getTime() <= Date.now()) continue;
         const expedition = (result.expeditionsData || []).find(exp => exp?.id === d.expeditionId);
         const veteran = String(expedition?.mercenary?.rank || "").toUpperCase() === "VETERAN";
-        const best = pickBestOption(d.decisionOptions, true, expeditionRules.resolveDecisionOverrides(merc, d.riskScore || 0, veteran));
+        const risk = decisionRisk(d.decisionOptions, d.riskScore, expedition?.riskScore);
+        const best = pickBestOption(d.decisionOptions, true, expeditionRules.resolveDecisionOverrides(merc, risk, veteran));
         if (!best) continue;
         contentAutoChosenDecisions.add(d.messageId);
         expeditionLog("mercenary-decision");
@@ -1302,7 +1324,7 @@
         }
         if (drone.isDestroyed) {
           console.log("[COR3 Helper] Auto-drone: drone destroyed \u2014 pausing");
-          Cor3CenterStore.set({ autoDrone: Object.assign({}, cfg, { paused: true }) });
+          Cor3CenterStore.update("autoDrone", { paused: true });
           Cor3CenterStore.set({ droneWarning: "Drone is destroyed \u2014 auto-drone paused. Repair or replace the drone." });
           finish();
           return;
@@ -1355,7 +1377,8 @@
       if (autoDroneResolvedEvents.has(ev.eventId)) return;
       const usable = ev.options.filter((o) => o && !o.requiredModuleId);
       const pool = usable.length > 0 ? usable : ev.options;
-      const best = pickBestOption(pool, true, expeditionRules.resolveDecisionOverrides(cfg, 0, false));
+      const risk = decisionRisk(ev.options, eventData.riskScore, eventData.risk, ev.riskScore, ev.risk);
+      const best = pickBestOption(pool, true, expeditionRules.resolveDecisionOverrides(cfg, risk, false));
       if (!best) return;
       autoDroneResolvedEvents.add(ev.eventId);
       expeditionLog("drone-decision");
@@ -1386,9 +1409,7 @@
       _droneRateLimitRetries = 0;
       console.log("[COR3 Helper] Auto-drone: rate limited after " + DRONE_RATE_LIMIT_MAX_RETRIES + " retries \u2014 disabling auto-dispatch");
       Cor3CenterStore.set({ droneWarning: "Rate limited \u2014 auto-dispatch disabled after " + DRONE_RATE_LIMIT_MAX_RETRIES + " retries. Re-enable to resume." });
-      Cor3CenterStore.get("autoDrone", (settings) => {
-        Cor3CenterStore.set({ autoDrone: Object.assign({}, settings.autoDrone || {}, { enabled: false }) });
-      });
+      Cor3CenterStore.update("autoDrone", { enabled: false });
     }
   }
   function handleDroneError(action, error) {
@@ -1411,7 +1432,7 @@
       const cfg = settings.autoDrone || {};
       if (action === "repair") {
         Cor3CenterStore.set({ droneWarning: "Drone repair failed: " + msg });
-        if (cfg.pauseOnRepairFail !== false) Cor3CenterStore.set({ autoDrone: { ...cfg, paused: true } });
+        if (cfg.pauseOnRepairFail !== false) Cor3CenterStore.update("autoDrone", { paused: true });
       } else {
         Cor3CenterStore.set({ droneWarning: "Drone " + action + " failed: " + msg });
       }
@@ -2083,8 +2104,11 @@
           }
         }
         if (changes.cor3_console_logs && changes.cor3_console_logs.newValue) {
+          const rows = changes.cor3_console_logs.newValue;
+          const batchSize = rows.at(-1)?.batchSize;
           const oldLen = (changes.cor3_console_logs.oldValue || []).length;
-          const newEntries = changes.cor3_console_logs.newValue.slice(oldLen);
+          const newEntries = Number.isInteger(batchSize) && batchSize > 0 && batchSize <= 128
+            ? rows.slice(-batchSize) : rows.slice(oldLen);
           const bgPopupEntries = newEntries.filter((e) => e.source !== "content");
           if (bgPopupEntries.length > 0) {
             try {
@@ -2190,7 +2214,7 @@
   var dailyHackInjected = false;
   var dailyLifecycleTicket = null;
   var dailyLifecycleTicketEpoch = -1;
-  var dailyLockGeneration = 0;
+  var dailyLockOwner = null;
   var dailyEnabledEpoch = -1;
   function validDailyLifecycleMessage(data) {
     return !!data && typeof data.lifecycleTicket === "string" && data.lifecycleTicket === dailyLifecycleTicket && dailyValid(dailyLifecycleTicketEpoch);
@@ -2201,27 +2225,33 @@
     dailyHackInjected = true;
     lifecycleScheduler.prepare('daily').then(ticket => {
       if (!lifecycleScheduler.valid('daily', epoch)) return;
-      if (!ticket) { dailyHackInjected = false;scheduleDailyHackCheck(Date.now()+300000,"solver_not_ready");return; }
+      if (!ticket) { dailyHackInjected = false; releaseDailyHackLock(); scheduleDailyHackCheck(Date.now()+300000,"solver_not_ready");return; }
       const script = document.createElement('script');
       script.dataset.cor3LifecycleTicket = ticket;
       script.src = chrome.runtime.getURL('daily-hack-solver.js');
       dailyLifecycleTicket = ticket;
       dailyLifecycleTicketEpoch = epoch;
       script.onload = () => script.remove();
-      script.onerror = () => { script.remove(); if (lifecycleScheduler.valid('daily', epoch)){dailyHackInjected=false;scheduleDailyHackCheck(Date.now()+300000,"solver_load_failed");} };
+      script.onerror = () => { script.remove(); if (lifecycleScheduler.valid('daily', epoch)){dailyHackInjected=false;releaseDailyHackLock();scheduleDailyHackCheck(Date.now()+300000,"solver_load_failed");} };
       (document.head || document.documentElement).appendChild(script);
     });
   }
   function stopDailyHackSolver() {
-    const task=dailyNetworkTask;
+    const task = dailyNetworkTask;
+    const owner = dailyLockOwner;
     dailyLifecycleTicket = null;
     _dailyHackStartInProgress = false;
     clearDailyHackTimer();
     lifecycleScheduler.stop('daily');
     dailyHackInjected = false;
-    if(task)acknowledgeDailyHackStop(dailyEpoch()).then(result=>{
-      if(result.success&&task.valid()){task.finish();if(dailyNetworkTask===task)dailyNetworkTask=null;}
-    }).catch(()=>{});
+    return acknowledgeDailyHackStop(dailyEpoch()).then(result => {
+      if(result.success){
+        releaseDailyHackLock(owner);
+        if(task?.valid()) task.finish();
+        if(dailyNetworkTask===task) dailyNetworkTask=null;
+      }
+      return result;
+    }, () => ({success:false,stopConfirmed:false}));
   }
   function enableDailyHackCommand(reason, force) {
     lifecycleScheduler.enable("daily");
@@ -2518,8 +2548,9 @@
   var _dailyHackAutoStarted = false;
   var _dailyHackAutoStartRetries = 0;
   var _dailyHackTimer = null;
-  var _dailyHackOwnerId = `daily-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  var DAILY_HACK_LOCK_TTL_MS = 10 * 60 * 1e3;
+  var dailyScheduleRevision = 0;
+  var dailyPreferenceRevision = 0;
+  var dailyLockSerial = 0;
   var DAILY_HACK_RETRY_DELAY_MS = 5 * 60 * 1e3;
   var DAILY_HACK_NEXT_GRACE_MS = 30 * 1e3;
   var DAILY_HACK_FALLBACK_DELAY_MS = 15 * 60 * 1e3;
@@ -2536,6 +2567,7 @@
     }, "*");
   }
   function clearDailyHackTimer() {
+    dailyScheduleRevision++;
     if (_dailyHackTimer) {
       clearTimeout(_dailyHackTimer);
       _dailyHackTimer = null;
@@ -2545,23 +2577,30 @@
     return Cor3DailySchedule.plan({now:Date.now(),state:data,intervalMinutes:15}).at;
   }
   function scheduleDailyHackCheck(at, reason) {
-    if (!dailyValid(dailyEpoch())) return;
-    if (!cor3AutomationAllowed()) return;
+    const epoch = dailyEpoch();
+    if (!dailyValid(epoch) || !cor3AutomationAllowed()) return;
     clearDailyHackTimer();
+    const revision = dailyScheduleRevision;
+    const task = dailyNetworkTask;
     const now = Date.now();
-    const target = Math.max(now + 1e3, Number(at) || now + DAILY_HACK_FALLBACK_DELAY_MS);
-    const delay = target - now;
-    Cor3CenterStore.set({ dailyHackNextCheckAt: target });
-    postDailyHackDiag("schedule.next", "Next daily hack check scheduled", {
-      reason,
-      at: new Date(target).toISOString(),
-      delayMs: delay
+    const target = Math.max(now + 1000, Number(at) || now + DAILY_HACK_FALLBACK_DELAY_MS);
+    Cor3CenterStore.daily({action:"schedule",at:target}).then(result => {
+      if (revision !== dailyScheduleRevision || !dailyValid(epoch) || !result.scheduled) return;
+      const delay = Math.max(0,target - Date.now());
+      postDailyHackDiag("schedule.next", "Next daily hack check scheduled", {
+        reason,
+        at: new Date(target).toISOString(),
+        delayMs: delay
+      });
+      _dailyHackTimer = dailyLater(() => {
+        _dailyHackTimer = null;
+        startDailyHackAutomation("scheduled");
+      }, Math.min(delay, 2147483647));
+    }).catch(() => {}).finally(() => {
+      if(dailyNetworkTask!==task) return;
+      dailyNetworkTask=null;
+      task?.finish();
     });
-    if(dailyNetworkTask){dailyNetworkTask.finish();dailyNetworkTask=null;}
-    _dailyHackTimer = dailyLater(() => {
-      _dailyHackTimer = null;
-      startDailyHackAutomation("scheduled");
-    }, Math.min(delay, 2147483647));
   }
   function scheduleDailyHackFromData(data, reason, fallbackDelayMs) {
     scheduleDailyHackCheck(getNextDailyCheckAt(data, fallbackDelayMs), reason);
@@ -2572,40 +2611,27 @@
       dailyHackLastResult: { status, reason: reason || null, at: Date.now() }
     });
   }
-  function releaseDailyHackLock() {
-    const closingEpoch = dailyEpoch();
-    const closingLock = dailyLockGeneration;
-    Cor3CenterStore.get("dailyHackRunLock", ({ dailyHackRunLock }) => {
-      if (closingEpoch !== dailyEpoch() || closingLock !== dailyLockGeneration) return;
-      if (dailyHackRunLock && dailyHackRunLock.owner === _dailyHackOwnerId) {
-        Cor3CenterStore.remove("dailyHackRunLock");
-      }
-    });
+  function releaseDailyHackLock(owner = dailyLockOwner) {
+    if (!owner) return;
+    if (owner === dailyLockOwner) dailyLockOwner = null;
+    Cor3CenterStore.daily({action:"release",owner}).catch(() => {});
   }
   function acquireDailyHackLock(callback) {
-    dailyLockGeneration++;
     const epoch = dailyEpoch();
     if (!dailyValid(epoch)) return;
-    Cor3CenterStore.get("dailyHackRunLock", ({ dailyHackRunLock }) => {
-      if (!dailyValid(epoch)) return;
-      const now = Date.now();
-      if (dailyHackRunLock && dailyHackRunLock.owner !== _dailyHackOwnerId && now - (dailyHackRunLock.startedAt || 0) < DAILY_HACK_LOCK_TTL_MS) {
-        postDailyHackDiag("lock.busy", "Another tab is already running daily hack", {
-          owner: dailyHackRunLock.owner,
-          ageMs: now - (dailyHackRunLock.startedAt || 0)
-        }, "warn");
-        callback(false);
+    const owner = `daily-${Date.now()}-${++dailyLockSerial}-${Math.random().toString(36).slice(2) || "0"}`;
+    Cor3CenterStore.daily({action:"acquire",owner}).then(lock => {
+      if (!dailyValid(epoch)) {
+        if(lock.acquired) releaseDailyHackLock(owner);
         return;
       }
-      Cor3CenterStore.set({
-        dailyHackRunLock: { owner: _dailyHackOwnerId, startedAt: now }
-      }, () => {
-      if (!dailyValid(epoch)) return;
-        Cor3CenterStore.get("dailyHackRunLock", ({ dailyHackRunLock: current }) => {
-      if (!dailyValid(epoch)) return;
-          callback(!!current && current.owner === _dailyHackOwnerId);
-        });
-      });
+      if (lock.acquired) dailyLockOwner = owner;
+      if (Number.isFinite(lock.ageMs)) {
+        postDailyHackDiag("lock.busy", "Daily lock is still within its lease", {ageMs:lock.ageMs}, "warn");
+      }
+      callback(lock);
+    }, () => {
+      if (dailyValid(epoch)) callback({acquired:false,retryInMs:120000});
     });
   }
   function fetchDailyClaimState(token, callback) {
@@ -2626,7 +2652,12 @@
     const epoch = dailyEpoch();
     if (!dailyValid(epoch)||!cor3AutomationAllowed()) {dailyNetworkTask?.finish();dailyNetworkTask=null;return;}
     const isAutoStart = reason === "load" || reason === "scheduled";
-    if (reason === "load" && _dailyHackAutoStarted) return;
+    if (reason === "load" && _dailyHackAutoStarted) {
+      const task = dailyNetworkTask;
+      dailyNetworkTask = null;
+      task?.finish();
+      return;
+    }
     if (dailyHackInjected || _dailyHackStartInProgress) {
       postDailyHackDiag("auto.start", "Daily hack start already in progress", { reason }, "warn");
       return;
@@ -2659,7 +2690,7 @@
           return;
         }
         _dailyHackStartInProgress = true;
-        postDailyHackDiag(isAutoStart ? "auto.start" : "toggle.enable", "Auto Daily Hacking start requested", {
+        postDailyHackDiag(reason === "toggle" ? "toggle.enable" : "auto.start", "Auto Daily Hacking start requested", {
           reason,
           attempt: _dailyHackAutoStartRetries
         });
@@ -2680,9 +2711,9 @@
             }
             return;
           }
-          postDailyHackDiag("auto.token", "Bearer token found \u2014 checking daily claim state", {
+          postDailyHackDiag("auto.token", "Current page session found; checking Daily claim state", {
             reason,
-            tokenLength: token.length
+            sessionBound: true
           });
           fetchDailyClaimState(token, (err, data) => {
             if (!dailyValid(epoch)) return;
@@ -2715,11 +2746,22 @@
               _dailyHackAutoStartRetries = 0;
               return;
             }
-            acquireDailyHackLock((locked) => {
-      if (!dailyValid(epoch)) return;
+            acquireDailyHackLock((lock) => {
+              if (!dailyValid(epoch)) return;
               _dailyHackStartInProgress = false;
-              if (!locked) {
-                scheduleDailyHackCheck(Date.now() + 2 * 60 * 1e3, "lock_busy");
+              if (!sessionValid() || !dailyNetworkTask?.valid()) {
+                if(lock.acquired) releaseDailyHackLock();
+                scheduleDailyHackCheck(Date.now() + DAILY_HACK_RETRY_DELAY_MS, "session_changed");
+                return;
+              }
+              if (!lock.acquired) {
+                if (lock.disabled) {
+                  const task = dailyNetworkTask;
+                  dailyNetworkTask = null;
+                  task?.finish();
+                } else {
+                  scheduleDailyHackCheck(Date.now() + lock.retryInMs, "lock_busy");
+                }
                 return;
               }
               postDailyHackDiag("auto.inject", "Injecting daily hack solver", { reason });
@@ -2809,20 +2851,18 @@
   window.addEventListener("focus", () => checkDailyHackIfDue("focus"));
   Cor3CenterStore.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes.autoDailyHackEnabled) return;
-    if (!changes.autoDailyHackEnabled.newValue) {
-      stopDailyHackSolver();
-      _dailyHackStartInProgress = false;
-      clearDailyHackTimer();
-      releaseDailyHackLock();
-      postDailyHackDiag("toggle.disable", "Auto Daily Hacking disabled via storage");
-    } else {
-      enableDailyHackCommand("storage", false);
-    }
+    const revision = ++dailyPreferenceRevision;
+    Cor3CenterStore.get("autoDailyHackEnabled", settings => {
+      if (revision !== dailyPreferenceRevision) return;
+      if (settings.autoDailyHackEnabled === false) {
+        stopDailyHackSolver();
+        postDailyHackDiag("toggle.disable", "Auto Daily Hacking disabled via storage");
+      } else if (settings.autoDailyHackEnabled === true) {
+        enableDailyHackCommand("storage", changes.autoDailyHackEnabled.newValue === true);
+      }
+    });
   });
-  window.addEventListener("beforeunload", () => {
-    clearDailyHackTimer();
-    releaseDailyHackLock();
-  });
+  window.addEventListener("pagehide", clearDailyHackTimer);
   function fetchDailyRewards(token) {
     const session = dailySession;
     const epoch = dailyEpoch();
@@ -2988,10 +3028,8 @@
         } else {
           _dailyHackAutoStarted = false;
           _dailyHackAutoStartRetries = 0;
-          stopDailyHackSolver();
-          releaseDailyHackLock();
           postDailyHackDiag("toggle.disable", "Auto Daily Hacking disabled");
-          acknowledgeDailyHackStop(dailyEpoch()).then(sendResponse, () => sendResponse({ success: false, stopConfirmed: false }));
+          stopDailyHackSolver().then(sendResponse);
           return true;
         }
       } else if (request.action === "respondDecision") {
@@ -3006,10 +3044,12 @@
         window.postMessage({ type: "COR3_REQUEST_ARCHIVED_EXPEDITIONS" }, "*");
         sendResponse({ success: true });
       } else if (request.action === "requestMercenaries") {
-        const queued=queueMarketRefresh({type:"COR3_REQUEST_MERCENARIES"});
+        const rosterOnly=request.rosterOnly===true;
+        const queued=queueMarketRefresh({type:"COR3_REQUEST_MERCENARIES",rosterOnly},rosterOnly?"manual-market:roster-home":undefined);
         sendResponse({success:queued!=="master-paused",queued});
       } else if (request.action === "requestUsolMercenaries") {
-        const queued=queueMarketRefresh({type:"COR3_REQUEST_USOL_MERCENARIES"});
+        const rosterOnly=request.rosterOnly===true;
+        const queued=queueMarketRefresh({type:"COR3_REQUEST_USOL_MERCENARIES",rosterOnly},rosterOnly?"manual-market:roster-usol":undefined);
         sendResponse({success:queued!=="master-paused",queued});
       } else if (request.action === "requestExpeditionConfig") {
         window.postMessage({ type: "COR3_REQUEST_EXPEDITION_CONFIG", mercenaryId: request.mercenaryId }, "*");
@@ -3353,8 +3393,18 @@
         const value=event.data,status=['loading','ok','partial','blocked','unavailable','cancelled'].includes(value.status)?value.status:null;
         const codes=['READ_STARTED','READ_COMPLETE','READ_RESUMED','SCOPE_CHANGED','READ_CANCELLED','TRANSPORT_UNAVAILABLE','MARKET_UNREACHABLE','ENDPOINT_UNCONFIRMED','MARKET_DATA_TIMEOUT','MERC_DATA_TIMEOUT','MERC_READ_FAILED','CONFIG_READ_FAILED','MERC_DATA_INVALID','CONFIG_UNAVAILABLE','MERC_CONFIGURE_UNCONFIRMED','MERC_CONFIGURE_FAILED'];
         const match=/^market:(home|dark|soyuz|usol):(all|jobs)$/.exec(value.key||'');
-        if(status&&match&&codes.includes(value.code)){const doc=globalThis.Cor3CenterIdentity?.snapshot()?.documentId;if(doc)Cor3CenterStore.update('marketReadProofs',{[match[1]]:{status,at:Date.now(),documentId:doc}}).catch(()=>{});}
-        if(status&&codes.includes(value.code)&&/^(market:(home|dark|soyuz|usol):(all|jobs)|merc:(home|usol))$/.test(value.key||''))runtimeLog?.log('read.'+status,value.code,{read:value.key},['partial','blocked','unavailable'].includes(status)?'warn':'info');
+        if(status&&match&&codes.includes(value.code)){
+          const doc=globalThis.Cor3CenterIdentity?.snapshot()?.documentId;
+          if(doc){
+            const proof={status,at:now,documentId:doc};
+            if(status==='ok'&&Number.isSafeInteger(value.jobsReadId)&&value.jobsReadId>0)proof.jobsReadId=value.jobsReadId;
+            Cor3CenterStore.update('marketReadProofs',{[match[1]]:proof}).then(()=>{
+              if(status==='ok'&&cor3AutomationAllowed()&&globalThis.Cor3CenterIdentity?.snapshot()?.documentId===doc)
+                globalThis.Cor3InPageControls?.wakeAutoMarket?.(0);
+            }).catch(()=>{});
+          }
+        }
+        if(status&&codes.includes(value.code)&&/^(market:(home|dark|soyuz|usol):(all|jobs)|merc:(home|usol)(:roster)?)$/.test(value.key||''))runtimeLog?.log('read.'+status,value.code,{read:value.key},['partial','blocked','unavailable'].includes(status)?'warn':'info');
       }
       if(event.origin===location.origin&&event.data?.type==='COR3_TRANSPORT_STATE'&&cor3AutomationAllowed()){
         const code=event.data.code;if(['PACKET_EXPIRED','SEND_UNCONFIRMED','SOCKET_UNAVAILABLE','QUEUE_FULL'].includes(code))runtimeLog?.log('transport.warning',code,null,'warn');
@@ -4175,12 +4225,6 @@
     }
   });
   Cor3CenterStore.remove("initialFetchDoneAt");
-  Cor3CenterStore.get("autoJobsRunning", (data) => {
-    if (data.autoJobsRunning) {
-      console.log("[COR3 Helper] Page reloaded \u2014 clearing stale auto-jobs state");
-      Cor3CenterStore.set({ autoJobsRunning: false, autoJobsQueue: [] });
-    }
-  });
   Cor3Automation.onStop(() => {
     dailySession = null;
     globalThis.Cor3InPageControls?.stopAutoMarket();
@@ -4222,6 +4266,12 @@
   // CENTER_CURRENT_GENERATION_START: account features remain on the original gate.
   Cor3Automation.onReady(runToken=>{
     if(!Cor3Automation.validRun(runToken))return;
+    const queue = network().snapshot();
+    if (queue.active !== 'auto-jobs' && !queue.queued.includes('auto-jobs')) {
+      Cor3CenterStore.reconcileJobs().then(({cleared}) => {
+        if (cleared && Cor3Automation.validRun(runToken)) globalThis.Cor3InPageControls?.wakeAutoMarket(0);
+      }).catch(() => {});
+    }
     globalThis.Cor3InPageControls?.startAutoMarket();
     globalThis.Cor3RuntimeLog?.log('page.ready','当前账号页面许可已确认');
     globalThis.Cor3RequestBootstrap?.();

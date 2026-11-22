@@ -21,7 +21,7 @@
     if (hasStorage) {
         if (typeof ServiceWorkerGlobalScope !== 'undefined' && self instanceof ServiceWorkerGlobalScope) {
             source = 'background';
-        } else if (typeof location !== 'undefined' && location.protocol === 'chrome-extension:') {
+        } else if (typeof location !== 'undefined' && ['chrome-extension:', 'moz-extension:'].includes(location.protocol)) {
             source = 'popup';
         } else {
             source = 'content';
@@ -43,16 +43,16 @@
     var _idbInstance = null;
     var _idbQueue = [];
     var _idbFlushTimer = null;
-    var _idbOpening = false;
+    var _idbFlushing = false;
+    var _idbOpening = null;
 
     function _idbOpen() {
         if (_idbInstance) {
             try { _idbInstance.objectStoreNames.contains(IDB_STORE); return Promise.resolve(_idbInstance); }
             catch (e) { _idbInstance = null; }
         }
-        if (_idbOpening) return new Promise(function (r) { setTimeout(function () { r(_idbInstance); }, 200); });
-        _idbOpening = true;
-        return new Promise(function (resolve) {
+        if (_idbOpening) return _idbOpening;
+        _idbOpening = new Promise(function (resolve) {
             try {
                 var req = indexedDB.open(IDB_NAME, IDB_VERSION);
                 req.onupgradeneeded = function (e) {
@@ -68,28 +68,45 @@
                         ls.createIndex('cat_ts', ['category', 'timestamp'], { unique: false });
                     }
                 };
-                req.onsuccess = function (e) { _idbInstance = e.target.result; _idbOpening = false; resolve(_idbInstance); };
-                req.onerror = function () { _idbOpening = false; resolve(null); };
-            } catch (e) { _idbOpening = false; resolve(null); }
-        });
+                req.onsuccess = function (e) {
+                    var db = e.target.result;
+                    _idbInstance = db;
+                    db.onclose = function () { if (_idbInstance === db) _idbInstance = null; };
+                    db.onversionchange = function () { db.close(); if (_idbInstance === db) _idbInstance = null; };
+                    resolve(db);
+                };
+                req.onerror = function () { resolve(null); };
+            } catch (e) { resolve(null); }
+        }).finally(function () { _idbOpening = null; });
+        return _idbOpening;
     }
 
+    var MAX_PENDING = 512;
+    function addPending(queue, entry) {
+        if (queue.length >= MAX_PENDING) queue.splice(0, MAX_PENDING / 4);
+        queue.push(entry);
+    }
     function _idbWrite(category, entry) {
-        _idbQueue.push({ timestamp: entry.timestamp, category: category, message: '[' + entry.source + '] ' + entry.args, level: entry.level });
-        if (!_idbFlushTimer) _idbFlushTimer = setTimeout(_idbFlush, 300);
+        addPending(_idbQueue, { timestamp: entry.timestamp, category: category, message: '[' + entry.source + '] ' + entry.args, level: entry.level });
+        if (!_idbFlushing && !_idbFlushTimer) _idbFlushTimer = setTimeout(_idbFlush, 300);
     }
 
     function _idbFlush() {
         _idbFlushTimer = null;
         if (_idbQueue.length === 0) return;
-        var batch = _idbQueue.splice(0);
+        _idbFlushing = true;
         _idbOpen().then(function (db) {
+            var batch = _idbQueue.splice(0);
             if (!db) return;
             try {
                 var tx = db.transaction(IDB_STORE, 'readwrite');
                 var store = tx.objectStore(IDB_STORE);
                 for (var i = 0; i < batch.length; i++) store.add(batch[i]);
-            } catch (e) { /* silently ignore */ }
+                return new Promise(function (done) { tx.oncomplete = tx.onerror = tx.onabort = done; });
+            } catch (e) { /* Closing the page also closes its log store. */ }
+        }).finally(function () {
+            _idbFlushing = false;
+            if (_idbQueue.length && !_idbFlushTimer) _idbFlushTimer = setTimeout(_idbFlush, 300);
         });
     }
 
@@ -110,7 +127,7 @@
                 parts.push('[unserializable]');
             }
         }
-        return parts.join(' ');
+        return parts.join(' ').slice(0, 2048);
     }
 
     // ─── MAIN WORLD MODE ───
@@ -163,39 +180,33 @@
     // ─── EXTENSION CONTEXT MODE (content script, background, popup) ───
     if (!hasStorage) return; // bail if neither mode applies
 
-    var STORAGE_KEY = 'cor3_console_logs';
     var _writeQueue = [];
     var _flushTimer = null;
+    var _writing = false;
+    var _scope = null;
 
+    function logScope() {
+        var b = globalThis.Cor3CenterBinding?.snapshot() || globalThis.Cor3CenterIdentity?.snapshot();
+        // A popup is pinned once for its lifetime. Other contexts follow their document.
+        if (!b) return globalThis.Cor3CenterUi ? 'popup' : null;
+        return JSON.stringify([b.accountId,b.documentId,b.epoch]);
+    }
     function flushQueue() {
         _flushTimer = null;
-        if (_writeQueue.length === 0) return;
-        var batch = _writeQueue.splice(0);
-        try {
-            Cor3CenterStore.get(STORAGE_KEY, function (data) {
-                try {
-                    var existing = data[STORAGE_KEY] || [];
-                    existing = existing.concat(batch);
-                    // Purge old
-                    var now = Date.now();
-                    if (now - _lastPurge > PURGE_INTERVAL) {
-                        _lastPurge = now;
-                        var cutoff = new Date(now - MAX_AGE).toISOString();
-                        while (existing.length > 0 && existing[0].timestamp < cutoff) existing.shift();
-                    }
-                    // Trim if over max
-                    while (existing.length > MAX_ENTRIES) existing.shift();
-                    var obj = {};
-                    obj[STORAGE_KEY] = existing;
-                    Cor3CenterStore.set(obj);
-                } catch (e) { /* extension context invalidated */ }
-            });
-        } catch (e) { /* extension context invalidated */ }
+        if (_scope !== logScope()) _writeQueue.length = 0;
+        if (!_writeQueue.length || _writing) return;
+        var batch = _writeQueue.splice(0, 128);
+        var batchScope = _scope;
+        _writing = true;
+        Promise.resolve().then(function () {
+            if (batchScope === logScope()) return globalThis.Cor3CenterStore?.appendConsole(batch);
+        }).catch(function () {}).finally(function () {
+            _writing = false;
+            if (_writeQueue.length) scheduleFlush();
+        });
     }
-
     function scheduleFlush() {
-        if (_flushTimer) return;
-        _flushTimer = setTimeout(flushQueue, 500); // batch writes every 500ms
+        if (!_flushTimer && !_writing) _flushTimer = setTimeout(flushQueue, 500);
     }
 
     var origLog = console.log;
@@ -211,8 +222,9 @@
                 source: source,
                 args: stringifyArgs(arguments)
             };
-            _writeQueue.push(entry);
-            scheduleFlush();
+            var scope = logScope();
+            if (scope !== _scope) { _writeQueue.length = 0; _scope = scope; }
+            if (scope) { addPending(_writeQueue, entry); scheduleFlush(); }
             // Also persist to IndexedDB for DevTools panel / copy
             // Only content scripts run on cor3.gg origin (same IndexedDB as the page)
             if (source === 'content') _idbWrite('ext-console', entry);

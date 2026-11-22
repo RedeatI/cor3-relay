@@ -35,7 +35,27 @@
   function logText(log){return String(log?.innerText||log?.textContent||'');}
   function fieldButtons(app){return [...(app?.querySelectorAll('[data-sentry-component="ParameterCells"] button[type="button"], [data-component-name="ParameterCells"] button[type="button"]')||[])].filter(b=>b.getAttribute('data-sentry-element')!=='SendButtonStyled');}
   function fieldValues(app){return fieldButtons(app).map(b=>{const spans=b.querySelectorAll('span');return spans.length>=2?normalize(spans[1].textContent):null;});}
-  function detectFields(text){const fields=[];for(const line of String(text).split(/\r?\n/)){const m=line.match(/→\s*(.+)/);if(!m)continue;const values=m[1].split('/').map(normalize);if(values.length>1&&values.every(Boolean))fields.push(values);}return fields;}
+  function detectFields(text, fieldCount) {
+    if (!fieldCount) return [];
+    const rows = [];
+    for (const line of String(text).split(/\r?\n/)) {
+      const match = line.match(/^([^→]+)→\s*(.+)$/);
+      if (!match) continue;
+      const label = normalize(match[1]);
+      const options = match[2].split('/').map(normalize);
+      if (label && options.length > 1 && options.every(Boolean)) rows.push({label, options});
+    }
+    if (!rows.length || rows.length % fieldCount !== 0) return [];
+    const fields = rows.slice(0, fieldCount);
+    // The game can print the whole list twice. Reject partial or conflicting copies.
+    if (new Set(fields.map(row => row.label)).size !== fieldCount ||
+        !rows.every((row, index) => {
+          const field = fields[index % fieldCount];
+          return row.label === field.label && row.options.length === field.options.length &&
+            row.options.every((option, i) => option === field.options[i]);
+        })) return [];
+    return fields.map(row => row.options);
+  }
   function responseRecords(text){const rows=[],rx=/(?:Input|输入)\s*[:：]\s*([\s\S]*?)\s*(?:Result|结果)\s*[:：]\s*(?:Mismatched|不匹配(?:数量|数)?|未匹配(?:数量|数)?)\s*[:：]?\s*(\d+)/gi;let m;while((m=rx.exec(text)))rows.push({combo:normalize(m[1]),mismatch:Number(m[2])});return rows;}
   function counts(rows){const values=new Map();for(const row of rows){const k=row.combo+'\n'+row.mismatch;values.set(k,(values.get(k)||0)+1);}return values;}
   function freshResponse(before,after,combo){const old=counts(before),seen=new Map();for(const row of after){const k=row.combo+'\n'+row.mismatch,n=(seen.get(k)||0)+1;seen.set(k,n);if(row.combo===combo&&n>(old.get(k)||0))return row.mismatch;}return null;}
@@ -58,7 +78,7 @@
    while(candidates.length){assertSession(s);const guess=chooseGuess(all,candidates,tried);if(guess<0)throw codeError('TERMINAL_FEEDBACK_INCONSISTENT');const combo=all[guess].map((x,i)=>s.fields[i][x]).join(' ');tried.add(guess);const before=await submitGuess(s,all[guess]);report('TERMINAL_GUESS_SUBMITTED');const mismatch=await waitForResponse(s,combo,before);if(mismatch<0||mismatch>s.fields.length)throw codeError('TERMINAL_FEEDBACK_INCONSISTENT');if(mismatch===0){report('TERMINAL_MATCHED');return;}candidates=candidates.filter(p=>distance(all[guess],all[p])===mismatch);report('TERMINAL_FEEDBACK_RECEIVED');await sleep(40);}
    throw codeError('TERMINAL_FEEDBACK_INCONSISTENT');
   }
-  async function waitForMinigame(){let handledApp=null,handledLog=null;report('TERMINAL_WATCHING');while(masterAllowed()){await sleep(200);if(!masterAllowed())return;const app=findHackContainer(),log=logRoot(app);if(!app){handledApp=null;handledLog=null;continue;}if(app===handledApp&&log===handledLog)continue;if(!visible(log))continue;const fields=detectFields(logText(log)),values=fieldValues(app);if(!fields.length||values.length!==fields.length||!values.every((v,i)=>fields[i].includes(v)))continue;
+  async function waitForMinigame(){let handledApp=null,handledLog=null;report('TERMINAL_WATCHING');while(masterAllowed()){await sleep(200);if(!masterAllowed())return;const app=findHackContainer(),log=logRoot(app);if(!app){handledApp=null;handledLog=null;continue;}if(app===handledApp&&log===handledLog)continue;if(!visible(log))continue;const values=fieldValues(app),fields=detectFields(logText(log),values.length);if(!fields.length||!values.every((v,i)=>fields[i].includes(v)))continue;
     const session={app,log,fields};await sleep(50);if(!validSession(session))continue;handledApp=app;handledLog=log;report('TERMINAL_STARTED');try{await runSolver(session);}catch(e){if(!masterAllowed())return;const code=/^TERMINAL_[A-Z_]+$/.test(e?.code||'')?e.code:'TERMINAL_FAILED';report(code,code==='TERMINAL_SESSION_CHANGED'?'info':'error');} // No blind resubmit or reopening a challenge after an unknown result.
    }}
   waitForMinigame().catch(()=>{if(masterAllowed()){report('TERMINAL_FAILED','error');window.postMessage({type:'COR3_OBSERVABLE_ERROR',source:'decryptLifecycle',code:'SOLVER_FAILED',phase:'run'},location.origin);}}).finally(cleanup);

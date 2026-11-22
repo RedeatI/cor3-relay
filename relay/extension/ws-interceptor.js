@@ -102,6 +102,8 @@
                                 : 'Unknown',
                             locationName: expedition.locationName || '',
                             zoneName: expedition.zoneName || '',
+                            riskScore: msg.riskScore ?? expedition.riskScore,
+                            isAutoResolved: msg.isAutoResolved === true,
                             messageId: msg.id,
                             content: msg.content,
                             decisionOptions: msg.decisionOptions,

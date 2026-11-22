@@ -25,40 +25,91 @@ test('run logs are bounded, deduplicated and scoped to the current document',asy
 test('queued log persistence is abandoned when its document is revoked',async()=>{let scope={accountId:'a',documentId:'one'};const c=vm.createContext({}),saved=[];vm.runInContext(src('run-log.js'),c);const log=c.Cor3RunLog.create({scope:()=>scope,sink:p=>saved.push(p)});log.log('page.ready','ready');scope=null;await log.flush();assert.equal(saved.length,0);});
 
 test('actual market bridge queues four panel reads and rejects unrelated/late completion messages',async()=>{
- const f=coordinator(),listeners=new Set(),callbacks={},sent=[];const w={addEventListener:(type,fn)=>listeners.add(fn),removeEventListener:(type,fn)=>listeners.delete(fn),postMessage(m){sent.push(m);queueMicrotask(()=>{const event={data:m,source:w,origin:'https://cor3.gg'};f.c.mainReceive(event);for(const fn of [...listeners])fn(event);});}};
+ const f=coordinator(),listeners=new Set(),callbacks={},sent=[],wakes=[];const w={addEventListener:(type,fn)=>listeners.add(fn),removeEventListener:(type,fn)=>listeners.delete(fn),postMessage(m){sent.push(m);queueMicrotask(()=>{const event={data:m,source:w,origin:'https://cor3.gg'};f.c.mainReceive(event);for(const fn of [...listeners])fn(event);});}};
  for(const name of ['Market','DarkMarket','SoyuzMarket','UsolMarket'])w['__cor3Request'+name]=cb=>callbacks[name]=cb;
- Object.assign(f.c,{window:w,location:{origin:'https://cor3.gg'},_automationEnqueue:(type,run)=>f.q.enqueue(type,run),setSeqRefreshRunning(){},_marketRefreshInProgress:false});
+ Object.assign(f.c,{window:w,location:{origin:'https://cor3.gg'},_automationEnqueue:(type,run)=>f.q.enqueue(type,run),setSeqRefreshRunning(){},_marketRefreshInProgress:false,Cor3InPageControls:{wakeAutoMarket:()=>wakes.push(f.q.current()?.id??null)}});
  const content=src('content.js'),start=content.indexOf('  function queueMarketRefresh('),end=content.indexOf('  // src/content/auto-update-markets.js',start);vm.runInContext(content.slice(start,end),f.c);
  const main=src('content-early.js'),a=main.indexOf('      if (event.data && event.data.type === "COR3_REQUEST_MARKET")'),b=main.indexOf('      if (event.data && event.data.type === "COR3_LEAVE_STASH")',a);vm.runInContext('function mainReceive(event){'+main.slice(a,b)+'}',f.c);
  f.add('auto-daily');for(const type of ['MARKET','DARK_MARKET','SOYUZ_MARKET','USOL_MARKET'])f.c.queueMarketRefresh({type:'COR3_REQUEST_'+type});assert.equal(sent.length,0);assert.equal(f.q.snapshot().queued.length,4);f.tasks['auto-daily'].finish();await flush();assert.equal(typeof callbacks.Market,'function');
  for(const fn of listeners)fn({source:w,origin:'https://example.invalid',data:{type:'COR3_NETWORK_DONE',networkTicket:f.q.current().id}});assert.match(f.q.current().type,/REQUEST_MARKET$/);
- callbacks.Market();await flush();assert.match(f.q.current().type,/DARK_MARKET$/);callbacks.Market();await flush();assert.match(f.q.current().type,/DARK_MARKET$/);callbacks.DarkMarket();await flush();callbacks.SoyuzMarket();await flush();callbacks.UsolMarket();await flush();assert.equal(f.q.current(),null);
+ callbacks.Market();await flush();assert.match(f.q.current().type,/DARK_MARKET$/);callbacks.Market();await flush();assert.match(f.q.current().type,/DARK_MARKET$/);callbacks.DarkMarket();await flush();callbacks.SoyuzMarket();await flush();callbacks.UsolMarket();await flush();assert.equal(f.q.current(),null);assert.equal(wakes.length,4);assert.equal(wakes.at(-1),null);
 });
 
 function alarmFixture(){let b={accountId:'FREEL_FF000009-0009',tabId:7,documentId:'doc-a'},at=10000;const data={autoDailyHackEnabled:true,dailyHackNextCheckAt:9000,helperMode:false},events={},calls=[];const event=name=>({addListener:fn=>events[name]=fn});const api={alarms:{onAlarm:event('alarm'),create:async(...a)=>calls.push(['create',...a]),clear:async(...a)=>calls.push(['clear',...a])},storage:{onChanged:event('storage')},tabs:{query(){assert.fail('tab fallback');},sendMessage:async(...a)=>calls.push(['send',...a])}};const binding={snapshot:()=>b,isCurrent:x=>x===b,guard:async(id,fn,x)=>{assert.equal(x,b);assert.equal(id,b.tabId);return fn();},onBound:fn=>events.bound=fn,onRevoke:fn=>events.revoke=fn};const c=vm.createContext({Cor3Automation:{allowed:()=>true}});vm.runInContext(src('daily-background.js'),c);const instance=c.Cor3DailyBackgroundFactory.create({api,binding,store:{get:async()=>({...data})},now:()=>at});return {c,instance,data,calls,events,change:x=>b=x};}
 test('background alarm wakes only the already bound game tab and document',async()=>{const f=alarmFixture();await f.instance.sync();assert.equal(f.calls[0][0],'create');await f.instance.wake({name:'cor3DailyCheck:FREEL_FF000009-0009:doc-a'});const send=f.calls.find(x=>x[0]==='send');assert.equal(send[1],7);assert.equal(send[2].documentId,'doc-a');assert.equal(send[3].frameId,0);});
 test('background alarm never binds another account, runs paused/off, or executes before due',async()=>{for(const mode of ['off','paused','unbound','future']){const f=alarmFixture();if(mode==='off')f.data.autoDailyHackEnabled=false;if(mode==='paused')f.data.helperMode=true;if(mode==='unbound')f.change(null);if(mode==='future')f.data.dailyHackNextCheckAt=999999;await f.instance.wake({name:'cor3DailyCheck:FREEL_FF000009-0009:doc-a'});assert.ok(!f.calls.some(x=>x[0]==='send'),mode);}});
 
-test('unchanged account profile, defaults and unchanged ICE engine and Simple bridge are retained byte for byte',()=>{for(const name of ['center-profile.js','center-feature-defaults.js','solver-profile.js','ice-wall-solver.js','simple-decrypt-bridge.js']){const hashes=JSON.parse(readFileSync(new URL('retained-hashes.json',import.meta.url),'utf8'));assert.equal(createHash('sha256').update(src(name)).digest('hex'),hashes[name],name);}});
+test('unchanged account profile, defaults and Simple bridge are retained byte for byte',()=>{for(const name of ['center-profile.js','center-feature-defaults.js','solver-profile.js','simple-decrypt-bridge.js']){const hashes=JSON.parse(readFileSync(new URL('retained-hashes.json',import.meta.url),'utf8'));assert.equal(createHash('sha256').update(src(name)).digest('hex'),hashes[name],name);}});
 
-function dailyFixture({state={hasClaimedToday:true},status=200,token=true,enabled=true}={}){
+function dailyFixture({state={hasClaimedToday:true},status=200,token=true,enabled=true,lock=null}={}){
  const f=coordinator(),data={autoDailyHackEnabled:enabled,helperMode:false,...(token?{bearerToken:'Bearer synthetic-only'}:{})},timers=[],injections=[],requests=[];
- const store={get(keys,cb){const result=Object.fromEntries((Array.isArray(keys)?keys:[keys]).filter(k=>Object.hasOwn(data,k)).map(k=>[k,data[k]]));const p=Promise.resolve(result);if(cb)p.then(cb);return p;},set(patch,cb){Object.assign(data,patch);const p=Promise.resolve();if(cb)p.then(cb);return p;},remove(keys){for(const k of Array.isArray(keys)?keys:[keys])delete data[k];return Promise.resolve();}};
+ const logs=[], dailyCalls=[];
+ let epoch=1, stopped=0, listen;
+ const store={
+  get(keys,cb){
+   const source={autoDailyHackEnabled:true,...data};
+   const result=Object.fromEntries((Array.isArray(keys)?keys:[keys]).filter(k=>Object.hasOwn(source,k)).map(k=>[k,source[k]]));
+   const p=Promise.resolve(result);
+   if(cb)p.then(cb);
+   return p;
+  },
+  set(patch,cb){Object.assign(data,patch);const p=Promise.resolve();if(cb)p.then(cb);return p;},
+  daily:async value=>{
+   dailyCalls.push(value);
+   if(value.action==='release'){delete data.dailyHackRunLock;return {released:true};}
+   if(data.autoDailyHackEnabled===false)return {scheduled:false,acquired:false,disabled:true};
+   if(value.action==='schedule'){data.dailyHackNextCheckAt=value.at;return {scheduled:true};}
+   if(lock)return lock;
+   data.dailyHackRunLock={owner:value.owner};
+   return {acquired:true};
+  },
+  onChanged:{addListener(fn){listen=fn;}}
+ };
  class ClockDate extends Date {static now(){return 10000;}}
- Object.assign(f.c,{Date:ClockDate,runtimeLog:null,window:{postMessage(){}},dailyEpoch:()=>1,dailyValid:e=>e===1,cor3AutomationAllowed:()=>true,dailyLater:(fn,ms)=>{timers.push({fn,ms});return 1;},clearTimeout(){},dailyHackInjected:false,dailyLockGeneration:0,dailyEnabledEpoch:1,Cor3CenterStore:store,withDailyToken:cb=>cb(data.bearerToken,()=>true),injectDailyHackSolver(){injections.push(1);f.c.dailyHackInjected=true;},ensureAntiAfkEnabled(){},fetchDailyRewards(){},_automationEnqueue:(type,run)=>f.q.enqueue(type,run),fetch:async(url,options)=>{requests.push({url,authorized:!!options.headers.Authorization});return {ok:status===200,status,json:async()=>state};}});
- vm.runInContext(src('daily-schedule.js'),f.c);const code=src('content.js'),a=code.indexOf('  var _dailyHackStartInProgress = false;'),b=code.indexOf('  function autoStartDailyHackOnLoad()',a);Object.assign(f.c,{AbortSignal});vm.runInContext(code.slice(code.indexOf('  function dailyReadOptions'),code.indexOf('  const dailyRetryClock')),f.c);vm.runInContext(code.slice(a,b),f.c);
- return {...f,data,timers,injections,requests,start:()=>f.c.startDailyHackAutomation('scheduled',false)};
+ Object.assign(f.c,{Date:ClockDate,runtimeLog:{log:(code,message)=>logs.push({code,message})},window:{postMessage(){},addEventListener(){}},document:{addEventListener(){}},dailyEpoch:()=>epoch,dailyValid:e=>e===epoch,cor3AutomationAllowed:()=>true,dailyLater:(fn,ms)=>{timers.push({fn,ms});return 1;},clearTimeout(){},dailyHackInjected:false,dailyLockOwner:null,dailyEnabledEpoch:1,stopDailyHackSolver(){stopped++;epoch++;f.c.clearDailyHackTimer();},enableDailyHackCommand(){},Cor3CenterStore:store,withDailyToken:cb=>cb(data.bearerToken,()=>true),injectDailyHackSolver(){injections.push(1);f.c.dailyHackInjected=true;},ensureAntiAfkEnabled(){},fetchDailyRewards(){},_automationEnqueue:(type,run)=>f.q.enqueue(type,run),fetch:async(url,options)=>{requests.push({url,authorized:!!options.headers.Authorization});return {ok:status===200,status,json:async()=>state};}});
+ vm.runInContext(src('daily-schedule.js'),f.c);const code=src('content.js'),a=code.indexOf('  var _dailyHackStartInProgress = false;'),b=code.indexOf('  function fetchDailyRewards(',a);Object.assign(f.c,{AbortSignal});vm.runInContext(code.slice(code.indexOf('  function dailyReadOptions'),code.indexOf('  const dailyRetryClock')),f.c);vm.runInContext(code.slice(a,b),f.c);
+ return {...f,data,timers,injections,requests,logs,dailyCalls,store,stopped:()=>stopped,notify:change=>listen({autoDailyHackEnabled:change},'local'),start:()=>f.c.startDailyHackAutomation('scheduled',false)};
 }
 test('actual Daily engine skips an already claimed day, releases lease and saves the reset wakeup',async()=>{const next=Date.parse('2026-11-16T00:00:00Z'),f=dailyFixture({state:{hasClaimedToday:true,nextTaskTime:new Date(next).toISOString()}});f.start();await flush();assert.equal(f.injections.length,0);assert.equal(f.data.dailyHackNextCheckAt,next+30000);assert.equal(f.q.current(),null);assert.equal(f.requests.length,1);});
 test('actual Daily HTTP failure and malformed state do not inject a solver and retry after five minutes',async()=>{for(const cfg of [{status:401},{state:null},{state:{}}]){const f=dailyFixture(cfg);f.start();await flush();assert.equal(f.injections.length,0);assert.equal(f.data.dailyHackNextCheckAt,310000);assert.equal(f.q.current(),null);}});
 test('actual unclaimed Daily holds its endpoint through the solver and releases after its result',async()=>{const f=dailyFixture({state:{hasClaimedToday:false}});f.start();await flush();assert.equal(f.injections.length,1);assert.equal(f.q.snapshot().lease.owner,'auto-daily');f.c.handleDailyHackRunFinished({success:false,reason:'synthetic-failure'});await flush();assert.equal(f.q.current(),null);assert.equal(f.data.dailyHackNextCheckAt,310000);});
 test('missing session or disabled Daily does not inject or retain the endpoint',async()=>{const missing=dailyFixture({token:false});missing.start();await flush();assert.equal(missing.q.current(),null);assert.equal(missing.injections.length,0);assert.equal(missing.data.dailyHackNextCheckAt,70000);const off=dailyFixture({enabled:false});off.start();await flush();assert.equal(off.q.current(),null);assert.equal(off.requests.length,0);});
+
+test('a missing preference is enabled by default and never emits a disable event', async () => {
+ const f=dailyFixture();
+ delete f.data.autoDailyHackEnabled;
+ f.notify({oldValue:true});
+ await flush();
+ assert.equal(f.stopped(),0);
+ assert.ok(!f.logs.some(entry=>entry.code==='daily.toggle.disable'));
+});
+
+test('a contended Daily schedules one retry, then a delayed schedule reply cannot rearm after off', async () => {
+ const f=dailyFixture({state:{hasClaimedToday:false},lock:{acquired:false,ageMs:411693,retryInMs:120000}});
+ const runDaily=f.store.daily;
+ let reply;
+ f.store.daily=value=>value.action==='schedule'?new Promise(resolve=>reply=resolve):runDaily(value);
+ f.start();
+ await flush();
+ assert.equal(typeof reply,'function');
+ assert.equal(f.injections.length,0);
+ f.data.autoDailyHackEnabled=false;
+ f.notify({newValue:false});
+ await flush();
+ reply({scheduled:true});
+ await flush();
+ assert.equal(f.stopped(),1);
+ assert.equal(f.timers.length,0);
+ assert.equal(f.q.current(),null);
+ assert.deepEqual(f.logs.filter(entry=>entry.code==='daily.schedule.next'),[]);
+});
+
 test('a prior document alarm cannot wake a newly bound account',async()=>{const f=alarmFixture();f.change({accountId:'FREEL_FF00000A-000A',tabId:9,documentId:'doc-b'});await f.instance.wake({name:'cor3DailyCheck:FREEL_FF000009-0009:doc-a'});assert.equal(f.calls.length,0);});
 
 test('actual startup fetch requests queue admission and acknowledges only its own completed ticket',()=>{
  const messages=[],steps=[],w={postMessage:m=>messages.push(m)},c=vm.createContext({window:w,location:{origin:'https://cor3.gg'},cor3AutomationAllowed:()=>true,console:{log(){}},humanDelay:()=>1,setTimeout:fn=>fn(),clearTimeout(){},getMarketRefreshAbortId:()=>0,stableReads:{cancelAll(){}}});w.__cor3MasterGate={snapshot:()=>({generation:1})};
- for(const name of ['Market','DarkMarket','SoyuzMarket','UsolMarket','UsolMercenaries'])w['__cor3Request'+name]=callback=>{steps.push(name);callback();};
- w.__cor3RequestMercenaries=(_arg,callback)=>{steps.push('Mercenaries');callback();};for(const name of ['Stash','Specialists','ArchivedExpeditions','Loadout','Updater'])w['__cor3Request'+name]=()=>steps.push(name);
+ for(const name of ['Market','DarkMarket','SoyuzMarket','UsolMarket','UsolMercenaries'])w['__cor3Request'+name]=(callback,rosterOnly)=>{if(name==='UsolMercenaries')assert.equal(rosterOnly,true);steps.push(name);callback();};
+ w.__cor3RequestMercenaries=(_arg,callback,rosterOnly)=>{assert.equal(rosterOnly,true);steps.push('Mercenaries');callback();};for(const name of ['Stash','Specialists','ArchivedExpeditions','Loadout','Updater'])w['__cor3Request'+name]=()=>steps.push(name);
  const code=src('content-early.js'),a=code.indexOf('  var initialFetchDone = false;'),b=code.indexOf('  window.__cor3KeepAlive',a);vm.runInContext(code.slice(a,b),c);
  w.__cor3InitialFetch();assert.equal(steps.length,0);assert.equal(messages[0].type,'COR3_INITIAL_FETCH_REQUEST');w.__cor3InitialFetchExclusive('ticket-one');assert.ok(steps.includes('UsolMercenaries'));assert.equal(messages.filter(m=>m.type==='COR3_NETWORK_DONE').at(-1).networkTicket,'ticket-one');assert.equal(w.__cor3InitialFetchInProgress,false);const before=steps.length;w.__cor3InitialFetchExclusive('ticket-two');assert.equal(steps.length,before);assert.equal(messages.at(-1).networkTicket,'ticket-two');
 });

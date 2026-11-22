@@ -39,3 +39,27 @@ test('fresh-market jobs stay queued through a timed minigame and cannot preempt 
 test('a timed minigame appearing during engine injection blocks dispatch until it closes',async()=>{const f=fixture();let resume;f.c.Cor3PageBusy=()=>f.c.mini===true;f.c.injectAutoJobSolver=async()=>{f.c.mini=true;};const original=f.c.setTimeout;f.c.setTimeout=(fn,ms)=>ms===500?(resume=fn,999):original(fn,ms);const r=await f.dispatch({action:'startAutoJobs',batchId:'6',freshMarketRead:{markets:['home'],after:10000},jobs:[{jobId:'one'}]});await flush();assert.equal(r.queueResult,'started');assert.equal(f.messages.length,0);assert.equal(f.receipt().execution.waitingFor,'minigame');f.c.mini=false;resume();await flush();assert.equal(f.messages.filter(x=>x.type==='COR3_AUTOJOB_START').length,1);});
 
 test('only matching ticket progress renews a long-running task lease',async()=>{const f=fixture();await f.dispatch({action:'startAutoJobs',batchId:'8',freshMarketRead:{markets:['home'],after:10000},jobs:[{jobId:'one'}]});await flush();const ticket=f.receipt().execution.ticket,expires=f.network.snapshot().lease.expiresAt;f.clock(160000);f.c.engineDone({origin:'https://cor3.gg',data:{type:'COR3_AUTOJOB_TRACKER_UPDATE',runTicket:'old',tracker:[]}});assert.equal(f.network.snapshot().lease.expiresAt,expires);f.c.engineDone({origin:'https://cor3.gg',data:{type:'COR3_AUTOJOB_TRACKER_UPDATE',runTicket:ticket,tracker:[{jobId:'one',status:'running'}]}});assert.ok(f.network.snapshot().lease.expiresAt>expires);f.clock(400000);f.network.pump();assert.equal(f.network.snapshot().blocked,'lease-expired');f.c.engineDone({origin:'https://cor3.gg',data:{type:'COR3_AUTOJOB_TRACKER_UPDATE',runTicket:ticket,tracker:[]}});assert.equal(f.network.snapshot().blocked,'lease-expired');});
+
+test('cancelling a refresh removes its listener and late completion cannot release the next ticket', () => {
+ const f=fixture();
+ const listeners = new Set(), w=f.c.window;
+ w.addEventListener=(_,fn)=>listeners.add(fn);
+ w.removeEventListener=(_,fn)=>listeners.delete(fn);
+ let completed=0;
+ f.c.queueMarketRefresh({type:'first'},'refresh-1',()=>completed++);
+ const first=f.network.current().id;
+ const old=[...listeners][0];
+ f.network.cancel();
+ assert.equal(listeners.size,0);
+ assert.equal(f.c._marketRefreshInProgress,false);
+ f.c.queueMarketRefresh({type:'second'},'refresh-2',()=>{completed++;throw Error('render failed');});
+ const second=f.network.current().id;
+ const event=id=>({source:w,origin:'https://cor3.gg',data:{type:'COR3_NETWORK_DONE',networkTicket:id}});
+ old(event(first));
+ assert.equal(completed,0);
+ assert.equal(f.network.current().id,second);
+ assert.throws(()=>[...listeners][0](event(second)),/render failed/);
+ assert.equal(completed,1);
+ assert.equal(listeners.size,0);
+ assert.equal(f.network.current(),null);
+});

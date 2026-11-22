@@ -43,11 +43,17 @@
   }
   const iceReasons = {
     'round-unconfirmed':'轮次未推进，已停止本次尝试',
+    'target-unready':'下一轮目标图案未就绪',
+    'no-match':'等待结束前未找到可靠的符文匹配',
+    'glyph-rejected':'游戏判定本次符文匹配错误',
     'match-retries':'匹配点击多次未获确认，已停止本轮'
   };
   function iceReason(message) {
     if (typeof message !== 'string') return null;
     if (message === 'Round did not advance; stopping this attempt') return 'round-unconfirmed';
+    if (message === 'Next round target did not become ready') return 'target-unready';
+    if (message === 'No reliable glyph match before the deadline') return 'no-match';
+    if (message === 'The game rejected the matching glyph') return 'glyph-rejected';
     if (message === 'Max retries reached, skipping round') return 'match-retries';
     return null;
   }

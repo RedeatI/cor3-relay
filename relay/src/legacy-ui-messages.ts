@@ -1077,10 +1077,6 @@ export const LEGACY_MESSAGES: readonly (readonly [string, string])[] = [
     "检查中..."
   ],
   [
-    "No cor3.gg tab found — open the game page",
-    "未找到 cor3.gg 标签页，请打开游戏页面"
-  ],
-  [
     "manual",
     "等待人工"
   ],

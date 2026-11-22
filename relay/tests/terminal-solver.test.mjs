@@ -7,7 +7,7 @@ function fixture({localized=false,delayMs=60,reply=true,secret=[2,1,2,0]}={}){
  const buttons=fields.map((f,i)=>({getAttribute:()=>null,querySelectorAll:()=>[{textContent:'F'+i},{get textContent(){return values[i];}}]}));
  app={isConnected:true,getClientRects:()=>[{}],querySelector:()=>log,querySelectorAll:()=>buttons,focus(){},dispatchEvent(e){if(e.type!=='keydown')return;if(e.key==='ArrowLeft')cursor=Math.max(0,cursor-1);if(e.key==='ArrowRight')cursor=Math.min(fields.length-1,cursor+1);if(['ArrowDown','ArrowUp'].includes(e.key)){const field=cursor,step=e.key==='ArrowUp'?1:-1;pending.push({at:at+delayMs,fn:()=>{const f=fields[field],i=f.indexOf(values[field]);values[field]=f[(i+step+f.length)%f.length];}});}if(e.key==='Enter'){const combo=values.join(' ');submissions.push(combo);const mismatch=values.reduce((n,v,i)=>n+(v!==fields[i][secret[i]]),0);if(reply)pending.push({at:at+80,fn:()=>{text+='\n'+(localized?'输入：'+combo+'\n结果：\n不匹配数：'+mismatch:'Input: '+combo+'\nResult:\nMismatched '+mismatch);}});}}};active=app;
  const ctx=vm.createContext({lifecycleTicket:'fixture',console:{log(){}},Date:{now:()=>at},KeyboardEvent:class{constructor(type,o){Object.assign(this,{type},o);}},document:{querySelectorAll:()=>active?[active]:[]},getComputedStyle:()=>({visibility:'visible'}),lifecycleRun:{sleep:async ms=>{at+=ms;for(let i=pending.length-1;i>=0;i--)if(pending[i].at<=at){pending.splice(i,1)[0].fn();}if(afterSleep)afterSleep();await new Promise(r=>setImmediate(r));}},masterAllowed:()=>live,report:code=>reports.push(code),window:{postMessage:m=>reports.push(m.code)},location:{origin:'https://cor3.gg'}});
- const start=code.indexOf('  const sleep='),end=code.indexOf('  async function waitForMinigame()');vm.runInContext(code.slice(start,end)+'\nthis.T={detectFields,responseRecords,freshResponse,combinations,distance,chooseGuess,submitGuess,waitValueChange,waitForResponse,runSolver};',ctx);
+ const start=code.indexOf('  const sleep='),end=code.indexOf('  waitForMinigame().catch');vm.runInContext(code.slice(start,end)+'\nthis.T={detectFields,responseRecords,freshResponse,combinations,distance,chooseGuess,submitGuess,waitValueChange,waitForResponse,runSolver,waitForMinigame};',ctx);
  return {T:ctx.T,session:{app,log,fields},submissions,values,reports,fields,get text(){return text;},clock:()=>at,advance:ms=>at+=ms,stop:()=>live=false,replace:()=>active={...app},onSleep:f=>afterSleep=f,append:t=>text+='\n'+t};
 }
 test('bounded Hamming minimax solves every 4x3 answer without repeating a guess',()=>{const f=fixture(),all=f.T.combinations(f.fields);let worst=0;for(let target=0;target<all.length;target++){let candidates=all.map((_,i)=>i),tried=new Set(),solved=false;for(let round=0;round<8;round++){const g=f.T.chooseGuess(all,candidates,tried);assert.ok(g>=0);assert.equal(tried.has(g),false);tried.add(g);const mismatch=f.T.distance(all[g],all[target]);if(mismatch===0){solved=true;worst=Math.max(worst,tried.size);break;}candidates=candidates.filter(p=>f.T.distance(all[g],all[p])===mismatch);}assert.equal(solved,true,'target '+target);}assert.ok(worst<=6,'maximum '+worst);});
@@ -19,6 +19,23 @@ test('a replaced challenge cannot receive a late parameter or Enter',async()=>{c
 test('a stopped page solver cannot send any further input',async()=>{const f=fixture();f.stop();await assert.rejects(f.T.submitGuess(f.session,[0,0,0,0]),/TERMINAL_SESSION_CHANGED/);assert.equal(f.submissions.length,0);});
 test('missing response causes one submission and no automatic resubmit',async()=>{const f=fixture({reply:false});await assert.rejects(f.T.runSolver(f.session),/TERMINAL_RESPONSE_UNCONFIRMED/);assert.equal(f.submissions.length,1);});
 test('unsupported or duplicated field options are rejected before combinatorial work',()=>{const f=fixture();assert.throws(()=>f.T.combinations([['a','a']]),/TERMINAL_FIELDS_UNSUPPORTED/);assert.throws(()=>f.T.combinations(Array(8).fill(['a','b','c'])),/TERMINAL_FIELDS_UNSUPPORTED/);});
+test('two identical support lists are recognized as one challenge by the page watcher',async()=>{
+ const f=fixture();
+ f.append(f.text);
+ f.onSleep(()=>{if(f.reports.includes('TERMINAL_STARTED')||f.clock()>1200)f.stop();});
+ await f.T.waitForMinigame();
+ assert.equal(f.reports.filter(code=>code==='TERMINAL_STARTED').length,1);
+});
+test('partial, differently ordered or conflicting duplicate support lists leave the puzzle untouched',async()=>{
+ for(const edit of [lines=>lines.slice(1),lines=>lines.reverse(),lines=>lines.map((line,i)=>i===2?line.replace('Sat','Radio'):line)]){
+  const f=fixture();
+  f.append(edit(f.text.split('\n').filter(line=>line.includes('→'))).join('\n'));
+  f.onSleep(()=>{if(f.clock()>1000)f.stop();});
+  await f.T.waitForMinigame();
+  assert.ok(!f.reports.includes('TERMINAL_STARTED'));
+  assert.equal(f.submissions.length,0);
+ }
+});
 test('an unrelated zero-mismatch log cannot mark this parameter set solved',async()=>{const f=fixture();f.append('Input: not the current fields\nResult:\nMismatched 0');await f.T.runSolver(f.session);assert.ok(f.submissions.length>0);assert.equal(f.submissions.at(-1),'v2.0 PUT Sat AES');});
 
 test('a late scheduled observation accepts an already rendered field before declaring timeout',async()=>{const f=fixture();f.onSleep(()=>{f.values[0]='v1.1';f.advance(5000);});await f.T.waitValueChange(f.session,0,'v1.0',1500);assert.equal(f.values[0],'v1.1');assert.equal(f.submissions.length,0);});

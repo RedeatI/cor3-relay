@@ -6,10 +6,13 @@
  function freshPools(data,scope,now){
   const pools={};
   for(const [key,m]of Object.entries(root.Cor3JobBatchFactory.markets)){
-   const md=data[m.key],p=data.marketReadProofs?.[key],at=data[m.at];
-   if(!md||!Array.isArray(md.jobs)||p?.status!=='ok'||p.documentId!==scope.documentId||!Number.isFinite(p.at)||!Number.isFinite(at)||Math.abs(at-p.at)>2000||p.at>now+1000||at>now+1000)continue;
+   const md=data[m.key],proof=data.marketReadProofs?.[key];
+   const after=root.Cor3JobBatchFactory.verifiedJobsAt(md,data[m.at],proof,scope.documentId,now);
+   if(after===null)continue;
+   const reset=String(md.nextJobsResetAt||''),deadline=Date.parse(reset);
+   if(Number.isFinite(deadline)&&deadline<=now)continue;
    const ids=[...new Set([...md.jobs,...(md.recentJobs||[])].map(x=>x?.id).filter(x=>typeof x==='string'))].sort();
-   pools[key]={reset:String(md.nextJobsResetAt||''),ids,after:Math.min(p.at,at)};
+   pools[key]={reset,ids,after};
   }
   return pools;
  }
@@ -27,7 +30,18 @@
    if(current&&!['complete','cancelled'].includes(current.phase)||q?.active||q?.queued?.length||q?.blocked||busy()){
     update(s,'waiting',{owner:q?.blocked||q?.active||current?.phase||'minigame'});wake(2000);return;
    }
-   await valid();const data=await read([...root.Cor3JobBatchFactory.keys,flag,seenKey]);await valid();
+   let data;
+   try{
+    await valid();
+    data=await read([...root.Cor3JobBatchFactory.keys,flag,seenKey]);
+    await valid();
+   }catch(e){
+    const code=e.code||e.message;
+    if(enabled&&gen===generation&&same(s,scope())&&allowed()&&['PAGE_BINDING_UNAVAILABLE','CENTER_STORE_UNAVAILABLE','CENTER_STORE_TIMEOUT'].includes(code)){
+     update(s,'waiting-permission',{code});wake(5000);return;
+    }
+    throw e;
+   }
    if(data[flag]===false){update(s,'off');return;}
    if(data.autoFinishAllJobsEnabled===true){update(s,'legacy-loop');return;}
    const latest=batch(s),latestQueue=queue();if(latestQueue&&!same(latestQueue,s))throw Error('PAGE_CHANGED');

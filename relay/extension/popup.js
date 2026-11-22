@@ -3382,14 +3382,7 @@
       } else {
         renderDailyHackSchedule(0);
       }
-      const tab = await getCor3Tab();
-      if (tab) {
-        Cor3CenterUi.send(tab.id, { action: "toggleDailyHackSolver", enabled }).catch(() => {
-        });
-      } else if (enabled && dailyHackSchedule) {
-        dailyHackSchedule.textContent = t("No cor3.gg tab found \u2014 open the game page", "\u672A\u627E\u5230 cor3.gg \u6807\u7B7E\u9875\uFF0C\u8BF7\u6253\u5F00\u6E38\u620F\u9875\u9762");
-        dailyHackSchedule.style.display = "block";
-      }
+      // The bound game page observes the saved preference.
       setTimeout(renderDailyHackDiagnostics, 500);
     });
     if (copyDailyHackDiagBtn) {
@@ -3599,20 +3592,25 @@
     });
   }
   function initToggleStorageListeners() {
+    let dailyRevision = 0;
     Cor3CenterStore.onChanged.addListener((changes, area) => {
       if (area === "local" && (changes.dailyHackDiagnostics || changes.dailyHackLog)) {
         renderDailyHackDiagnostics();
       }
       if (area === "local" && changes.autoDailyHackEnabled) {
-        autoDailyHackToggle.checked = !!changes.autoDailyHackEnabled.newValue;
-        updateDailyHackStatusLabel(autoDailyHackToggle.checked);
-        if (!autoDailyHackToggle.checked) {
-          renderDailyHackSchedule(0);
-        } else {
-          Cor3CenterStore.get("dailyHackNextCheckAt", (local) => {
-            renderDailyHackSchedule(local.dailyHackNextCheckAt);
-          });
-        }
+        const revision = ++dailyRevision;
+        Cor3CenterStore.get(["autoDailyHackEnabled", "dailyHackNextCheckAt"], data => {
+          if (revision !== dailyRevision) return;
+          if (typeof data.autoDailyHackEnabled !== "boolean") {
+            showCenterPreferenceUnknown(autoDailyHackToggle, dailyHackStatus);
+            renderDailyHackSchedule(0);
+            return;
+          }
+          autoDailyHackToggle.checked = data.autoDailyHackEnabled;
+          autoDailyHackToggle.indeterminate = false;
+          updateDailyHackStatusLabel(data.autoDailyHackEnabled);
+          renderDailyHackSchedule(data.dailyHackNextCheckAt);
+        });
       }
       if (area === "local" && changes.dailyHackNextCheckAt) {
         renderDailyHackSchedule(changes.dailyHackNextCheckAt.newValue);
