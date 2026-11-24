@@ -53,11 +53,8 @@
   }
   const runtimeLog=globalThis.Cor3RunLog?.create({scope:networkScope,sink:payload=>Cor3CenterStore.set({automationRunLogs:payload})});
   globalThis.Cor3RuntimeLog=runtimeLog;
-  function timedActivityRunning(){
-    const names=['IceWallBreakApplication','ConfigHackApplication','SimpleDecryptApplication','SimpleDecryptionApplication'];
-    const selector=[...names.flatMap(n=>['[data-component-name="'+n+'"]','[data-sentry-component="'+n+'"]']),'[data-component-name*="SimpleHack"]','[data-sentry-component*="SimpleHack"]','iframe[src*="/games/"]'].join(',');
-    return Array.from(document.querySelectorAll(selector)).some(el=>{const style=getComputedStyle(el);return el.getClientRects().length&&style.visibility!=="hidden"&&style.visibility!=="collapse"&&style.display!=="none";});
-  }
+  function timedWindows(){return globalThis.Cor3PageLifetime.timedWindows();}
+  function timedActivityRunning(){return timedWindows().length>0;}
   let networkCoordinator,jobBatchReceipt=null;const networkObservers=new Set();
   function network() {
     if(!networkCoordinator)networkCoordinator=Cor3NetworkCoordinator.create({scope:networkScope,allowed:cor3AutomationAllowed,
@@ -74,10 +71,149 @@
   globalThis.Cor3RequestBootstrap=()=>queueMarketRefresh({type:'COR3_INITIAL_FETCH_RUN'},'initial-fetch');
   globalThis.Cor3NetworkRuntime=Object.freeze({snapshot:()=>network().snapshot(),recheckMarkets:()=>checkMarketRefreshClock(),batchReceipt:()=>jobBatchReceipt?structuredClone(jobBatchReceipt):null,subscribe:fn=>{networkObservers.add(fn);return()=>networkObservers.delete(fn);}});
   setInterval(()=>{if(cor3AutomationAllowed())network().pump();},1000);
+  const pageOpenedAt=dailyRetryClock(), recoveryMonitor=globalThis.Cor3PageLifetime?.monitor();
+  let hiddenSince=globalThis.document?.hidden?pageOpenedAt:null;
+  window.addEventListener('visibilitychange',()=>{hiddenSince=document.hidden?dailyRetryClock():null;},{capture:true});
+  let lastInputAt=pageOpenedAt, recoveryChecking=false, disabledRecoveryScope=null;
+  const sameRecoveryScope=(a,b)=>!!a && !!b && a.accountId===b.accountId && a.documentId===b.documentId;
+  for(const name of ['pointerdown','keydown','input','wheel'])window.addEventListener(name,e=>{if(e.isTrusted)lastInputAt=dailyRetryClock();},{capture:true,passive:true});
+  window.addEventListener('offline',()=>{lastPageWait=null;recoveryMonitor?.reset();});
+  Cor3CenterStore.onChanged?.addListener(changes=>{
+    if(changes.pageAutoReloadEnabled){
+      disabledRecoveryScope=changes.pageAutoReloadEnabled.newValue===false?networkScope():null;
+      recoveryMonitor?.reset();
+    }
+  });
+  let lastPageWait=null;
+  globalThis.Cor3PageWaitFor=scope=>{
+    if(!scope || !lastPageWait || lastPageWait.account!==scope.accountId || lastPageWait.documentId!==scope.documentId ||
+        dailyRetryClock()-lastPageWait.at>95000)return null;
+    return lastPageWait.code;
+  };
+  function recoveryObservation(){
+    const scope=networkScope(), q=network().snapshot(), windows=timedWindows();
+    const emptyIce=windows.length===1 && globalThis.Cor3PageLifetime.emptyIce(windows[0]) ? (windows[0].closest?.('[data-component-name="ApplicationWindow"]') || windows[0]) : null;
+    const terminal=windows.length===1 && !emptyIce ? globalThis.Cor3PageLifetime.terminalWait(windows[0]) : null;
+    const stalledRead=q.lease?.expired && q.blocked==='lease-expired' && globalThis.Cor3PageLifetime.readRecovery(q.active);
+    const client=globalThis.Cor3InPageControls, status=client?.readStatus();
+    const batch=status?.batch;
+    // Heartbeats and queue bookkeeping can continue even with a frozen window.
+    const batchProgress=(emptyIce||terminal) && batch ? JSON.stringify([batch.id,batch.startedAt,batch.processed,batch.done,
+      batch.results?.find(row=>row.status==='running')?.jobId,batch.current]) : null;
+    return {account:scope?.accountId||'',documentId:scope?.documentId||'',now:dailyRetryClock(),
+      age:hiddenSince===null?0:dailyRetryClock()-hiddenSince,quiet:dailyRetryClock()-lastInputAt,hidden:document.hidden,online:navigator.onLine,
+      permitted:cor3AutomationAllowed()&&status?.allowed===true&&!!status.queue&&!sameRecoveryScope(scope,disabledRecoveryScope),
+      busy:!!document.activeElement?.matches?.('textarea,input:not([type]),input[type=text],[contenteditable=true]') || !!globalThis.Cor3ControlDraftOpen?.(!!(emptyIce||terminal)) || (windows.length>0&&!emptyIce&&!terminal),emptyIce,terminal,batchProgress,active:q.active,ticket:q.lease?.id||null,expired:q.lease?.expired===true,fault:q.blocked,
+      queued:q.queued.some(owner=>(!emptyIce && !terminal && !stalledRead) || !['initial-fetch','auto-update-markets'].includes(owner)),
+      batchBusy:!!status?.batch && !['complete','cancelled'].includes(status.batch.phase) && !(Number.isFinite(status.batch.finishedAt) && ['blocked','unconfirmed'].includes(status.batch.phase) && !q.active),equipmentChecks:client?.equipmentChecks?.()||0};
+  }
+  async function recoverySettingsAllow(scope,connectionStall){
+    const keys=['pageAutoReloadEnabled','valuableSearchRunning','valuableSellerRunning','forceMaintenanceInProgress','dailyHackRunLock','autoJobsRunning'];
+    const state=await Cor3CenterStore.get(keys);
+    if(!sameRecoveryScope(scope,networkScope()))return false;
+    if(state.pageAutoReloadEnabled===false){disabledRecoveryScope=scope;recoveryMonitor.reset();return false;}
+    return !(state.valuableSearchRunning || state.valuableSellerRunning || state.forceMaintenanceInProgress ||
+      (!connectionStall && state.autoJobsRunning) ||
+      (state.dailyHackRunLock && Date.now()-state.dailyHackRunLock.startedAt<600000));
+  }
+  async function checkPageRecovery(){
+    if(recoveryChecking||!recoveryMonitor||window.top!==window)return;
+    if(!networkScope()||!cor3AutomationAllowed()){lastPageWait=null;recoveryMonitor.reset();return;}
+    recoveryChecking=true;
+    try {
+      const client=globalThis.Cor3InPageControls;
+      // Equipment reconciliation has its own in-flight guard and confirmation count.
+      // Its read or acknowledgement can outlive this sample.
+      if(client?.recheckEquipment)Promise.resolve().then(()=>client.recheckEquipment()).catch(()=>{});
+      const first=recoveryObservation(),reason=recoveryMonitor(first);
+      const wait=first.terminal?'terminal':first.emptyIce?'ice':first.expired && first.fault==='lease-expired' && Cor3PageLifetime.readRecovery(first.active)==='roster-read'?'roster':null;
+      const expiredRead=first.ticket && first.expired && first.fault==='lease-expired' && Cor3PageLifetime.readRecovery(first.active);
+      const protectedTask=first.busy || first.queued || first.batchBusy || (first.active && !expiredRead);
+      if(wait && first.online){
+        const source=first.terminal||first.emptyIce||first.ticket, previous=lastPageWait;
+        const continuous=previous && previous.account===first.account && previous.documentId===first.documentId &&
+          previous.source===source && first.now>=previous.at && first.now-previous.at<=95000;
+        const since=continuous?previous.since:first.now;
+        const rosterHeld=wait==='roster' && protectedTask;
+        const prolonged=rosterHeld && first.now-since>=180000;
+        const recoveryDisabled=sameRecoveryScope(disabledRecoveryScope,{accountId:first.account,documentId:first.documentId});
+        const code=wait+(recoveryDisabled?'-off':prolonged?'-held-long':rosterHeld?'-held':'-observing');
+        lastPageWait={account:first.account,documentId:first.documentId,at:first.now,since,source,
+          code,warned:!!(continuous && previous.warned)};
+        if(prolonged && !lastPageWait.warned && !recoveryDisabled){
+          lastPageWait.warned=true;
+          globalThis.Cor3RuntimeLog?.log('page.wait.held','远征名单读取持续超时，已保留当前操作或排队任务',{reason:wait,owner:first.active},'warn');
+        }
+      }else lastPageWait=null;
+      if(!reason)return;
+      const scope={accountId:first.account,documentId:first.documentId};
+      const key='cor3.relay.reload.'+scope.accountId;
+      const readHistory=()=>JSON.parse(sessionStorage.getItem(key)||'[]');
+      const readLast=()=>JSON.parse(sessionStorage.getItem(key+'.last')||'null');
+      if(!Cor3PageLifetime.canReload(readHistory(),Date.now(),reason,readLast()))return;
+      const connectionStall=Cor3PageLifetime.isConnectionWait(reason);
+      if(!await recoverySettingsAllow(scope,connectionStall))return;
+      await client.verifyPage(scope);
+      // Permission verification can span the start of an activity or a preference change.
+      if(!await recoverySettingsAllow(scope,connectionStall))return;
+      const final=recoveryObservation();
+      if(final.account!==first.account||final.documentId!==first.documentId||recoveryMonitor(final)!==reason)return;
+      const history=readHistory();
+      const refreshedAt=Date.now();
+      if(!Cor3PageLifetime.canReload(history,refreshedAt,reason,readLast()))return;
+      // Store the reason before navigation. The next document starts a new observation.
+      sessionStorage.setItem(key,JSON.stringify([...history.filter(t=>t>refreshedAt-21600000).slice(-1),refreshedAt]));
+      sessionStorage.setItem(key+'.last',JSON.stringify({reason,at:refreshedAt}));
+      recoveryMonitor.reset();
+      window.location.reload();
+    }catch{/* A missing proof or unreadable tab storage defers refresh. */}finally{recoveryChecking=false;}
+  }
+  setInterval(()=>void checkPageRecovery(),30000);
   const expeditionRules = globalThis.Cor3ExpeditionPriority;
   const expeditionLog = code => globalThis.Cor3ExpeditionDiagnostics?.log(code);
   // Balance observed on this page. Do not use another session's cached balance to authorize dispatch.
   let observedCredits;
+  let mercCreditHold=null;
+  let mercCheckAt=0, mercCheckScope=null, mercIntervalMs=1800000, mercProbePending=false;
+  function mercInterval(settings){
+    const n=settings?.checkIntervalMinutes;
+    return (Number.isInteger(n)&&n>=5&&n<=1440?n:30)*60000;
+  }
+  function rememberMercInterval(settings){
+    mercIntervalMs=mercInterval(settings);
+    mercCheckAt=Date.now()+mercIntervalMs;
+  }
+  function deferMercCredits(message){
+    const at=Date.now();
+    mercCheckAt=at+mercIntervalMs;
+    mercCreditHold={...networkScope(),until:mercCheckAt};
+    return Cor3CenterStore.set({expeditionLaunchError:{error:message,timestamp:at,retryAt:mercCheckAt,retryAfter:Math.ceil(mercIntervalMs/1000),reason:'insufficient_credits'}});
+  }
+  async function checkMercDeadline(){
+    const scope=networkScope();
+    if(!scope||!cor3AutomationAllowed()||mercProbePending)return;
+    const scopeKey=scope.accountId+'|'+scope.documentId;
+    if(mercCheckScope===scopeKey&&Date.now()<mercCheckAt)return;
+    const newDocument=mercCheckScope!==scopeKey;
+    mercProbePending=true;
+    try {
+      const state=await Cor3CenterStore.get(['autoSendMerc','expeditionLaunchError','expeditionsDataUpdatedAt']);
+      if(!cor3AutomationAllowed()||networkScope()?.documentId!==scope.documentId||networkScope()?.accountId!==scope.accountId)return;
+      const now=Date.now();
+      mercCheckScope=scopeKey;
+      rememberMercInterval(state.autoSendMerc);
+      if(!state.autoSendMerc?.enabled)return;
+      const retryAt=state.expeditionLaunchError?.retryAt;
+      if(Number.isFinite(retryAt)){
+        if(retryAt>now){mercCheckAt=retryAt;return;}
+      }else if(newDocument || now-state.expeditionsDataUpdatedAt<mercIntervalMs)return;
+      const q=network().snapshot();
+      if(q.active||q.queued.length||timedActivityRunning()){mercCheckAt=now+60000;return;}
+      // This request only fetches the current list. Its receiver applies the saved dispatch policy.
+      window.postMessage({type:'COR3_REQUEST_EXPEDITIONS'},location.origin);
+    }catch{mercCheckAt=Date.now()+60000;}finally{mercProbePending=false;}
+  }
+  setInterval(()=>void checkMercDeadline(),60000);
   function reconsiderAfterCreditIncrease() {
     if (autoSendInProgress || !cor3AutomationAllowed()) return;
     Cor3CenterStore.get(["autoSendMerc", "expeditionsData"], data => {
@@ -231,9 +367,10 @@
   function checkAutoSendOnExpeditionData(expeditions) {
     if(!cor3AutomationAllowed()||!Array.isArray(expeditions)||autoSendInProgress)return;
     _automationEnqueue("auto-send",task=>{
-      Cor3CenterStore.get(["autoSendMerc","expeditionsData"],data=>{
+      Cor3CenterStore.get(["autoSendMerc","expeditionsData","expeditionLaunchError"],data=>{
         if(!task.valid())return;
-        if(!data.autoSendMerc?.enabled||!Array.isArray(data.expeditionsData)){task.finish();return;}
+        const scope=networkScope(),held=mercCreditHold && scope?.documentId===mercCreditHold.documentId && scope?.accountId===mercCreditHold.accountId && mercCreditHold.until>Date.now();
+        if(!data.autoSendMerc?.enabled||held||data.expeditionLaunchError?.retryAt>Date.now()||!Array.isArray(data.expeditionsData)){task.finish();return;}
         checkAutoSendExclusive(data.expeditionsData,task);
       });
     });
@@ -2785,7 +2922,8 @@
     releaseDailyHackLock();
     const success = !!(result && result.success);
     const reason = result && result.reason || (success ? "success" : "failed");
-    setDailyHackResult(success ? "success" : "failed", reason);
+    const verifyClaim = reason === "verify_claim";
+    setDailyHackResult(verifyClaim ? "pending" : success ? "success" : "failed", reason);
     Cor3CenterStore.get(["autoDailyHackEnabled", "helperMode"], (settings) => {
       if (!dailyValid(epoch)) return;
       if (!settings.autoDailyHackEnabled || settings.helperMode) {
@@ -2793,7 +2931,7 @@
         _dailyHackStartInProgress = false;
         return;
       }
-      if (!success) {
+      if (!success && !verifyClaim) {
         postDailyHackDiag("schedule.retry", "Daily hack failed \u2014 retrying later", {
           retryInMs: DAILY_HACK_RETRY_DELAY_MS
         }, "warn");
@@ -2819,7 +2957,12 @@
           if (data) {
             Cor3CenterStore.set({ dailyOpsData: data, dailyOpsUpdatedAt: Date.now() });
           }
-          scheduleDailyHackFromData(data, "success", DAILY_HACK_FALLBACK_DELAY_MS);
+          if (verifyClaim && data?.hasClaimedToday !== true) {
+            scheduleDailyHackCheck(Date.now() + DAILY_HACK_RETRY_DELAY_MS, "claim_unconfirmed");
+          } else {
+            if (verifyClaim) setDailyHackResult("success", "claim_confirmed");
+            scheduleDailyHackFromData(data, "success", DAILY_HACK_FALLBACK_DELAY_MS);
+          }
           _dailyHackStartInProgress = false;
         });
       });
@@ -3389,6 +3532,11 @@
       if (event.source !== window) return;
       if (!isContextValid()) return;
       const now = Date.now();
+      if(event.origin===location.origin && event.data?.type==='COR3_WINGS_SNAPSHOT' && cor3AutomationAllowed() && networkScope()){
+        const {action,snapshot}=event.data, clean=globalThis.Cor3PageLifetime?.wings(action,snapshot);
+        if(clean)Cor3CenterStore.set({[action==='get.page'?'wingsPage':'wingsHistory']:{...clean,at:now}});
+        return;
+      }
       if(event.origin===location.origin&&event.data?.type==='COR3_READ_STATE'&&cor3AutomationAllowed()){
         const value=event.data,status=['loading','ok','partial','blocked','unavailable','cancelled'].includes(value.status)?value.status:null;
         const codes=['READ_STARTED','READ_COMPLETE','READ_RESUMED','SCOPE_CHANGED','READ_CANCELLED','TRANSPORT_UNAVAILABLE','MARKET_UNREACHABLE','ENDPOINT_UNCONFIRMED','MARKET_DATA_TIMEOUT','MERC_DATA_TIMEOUT','MERC_READ_FAILED','CONFIG_READ_FAILED','MERC_DATA_INVALID','CONFIG_UNAVAILABLE','MERC_CONFIGURE_UNCONFIRMED','MERC_CONFIGURE_FAILED'];
@@ -3432,7 +3580,7 @@
         });
         if (!hasActive) {
           Cor3CenterStore.get("expeditionLaunchError", function(result) {
-            if (result.expeditionLaunchError && !result.expeditionLaunchError.noRetry) {
+            if (result.expeditionLaunchError && !result.expeditionLaunchError.noRetry && !(result.expeditionLaunchError.retryAt > Date.now())) {
               console.log("[COR3 Helper] No active expeditions \u2014 clearing expedition launch error");
               Cor3CenterStore.remove("expeditionLaunchError");
             }
@@ -3679,25 +3827,8 @@
           const msg = event.data.error.message || JSON.stringify(event.data.error);
           console.log("[COR3 Helper] Auto-send: open.container failed:", msg);
           if (msg === "insufficient-credits") {
-            Cor3CenterStore.get("autoSendMerc", (settings) => {
-              const merc = settings.autoSendMerc || {};
-              Cor3CenterStore.set({
-                autoSendMerc: {
-                  ...merc,
-                  enabled: false,
-                  hasInsurance: !!merc.hasInsurance,
-                  disabledReason: "insufficient_credits"
-                }
-              });
-            });
-            Cor3CenterStore.set({
-              expeditionLaunchError: {
-                error: "Insufficient credits to open reward container. Auto-send disabled.",
-                retryAfter: 0,
-                timestamp: Date.now(),
-                noRetry: true
-              }
-            });
+            if (!autoSendInProgress || !expId) return;
+            void deferMercCredits("Insufficient credits to open reward container").catch(()=>{});
             setAutoSendInProgress(false);
             setAutoSendExpeditionId(null);
             _automationFinish("auto-send");
@@ -3734,26 +3865,8 @@
         }
       }
       if (event.data && event.data.type === "COR3_WS_INSUFFICIENT_CREDITS") {
-        console.log("[COR3 Helper] Insufficient credits for expedition launch, disabling auto-send mercenary");
-        Cor3CenterStore.get("autoSendMerc", (settings) => {
-          const merc = settings.autoSendMerc || {};
-          Cor3CenterStore.set({
-            autoSendMerc: {
-              ...merc,
-              enabled: false,
-              hasInsurance: !!merc.hasInsurance,
-              disabledReason: "insufficient_credits"
-            }
-          });
-        });
-        Cor3CenterStore.set({
-          expeditionLaunchError: {
-            error: "Insufficient credits to launch expedition",
-            retryAfter: 0,
-            timestamp: Date.now(),
-            noRetry: true
-          }
-        });
+        if (!autoSendInProgress || network().current()?.type!=="auto-send") return;
+        void deferMercCredits("Insufficient credits to launch expedition").catch(()=>{});
         setAutoSendInProgress(false);
         _automationFinish("auto-send");
         setAutoSendExpeditionId(null);
@@ -4054,20 +4167,18 @@
         setAutoJobsActive(false);Cor3CenterStore.set({autoJobsRunning:false});const doneTask=autoJobTask;autoJobTask=null;doneTask.finish();globalThis.Cor3NetworkRuntime?.recheckMarkets?.();
       }
       if (event.data && event.data.type === "COR3_AUTOJOB_ICE_WALL_RELOAD") {
-        if (!cor3AutomationAllowed()) return;
-        var lockedJob = event.data.lockedJob;
-        console.log("[COR3 Helper] ICE Wall stuck \u2014 saving locked job and reloading page");
-        Cor3CenterStore.get("autoJobsLockedJobs", (prev) => {
-          if (!cor3AutomationAllowed()) return;
-          var lockedList = prev.autoJobsLockedJobs || [];
-          if (lockedJob && lockedJob.jobId) {
-            lockedList = lockedList.filter((j) => j.jobId !== lockedJob.jobId);
-            lockedList.push(lockedJob);
-          }
-          Cor3CenterStore.set({ autoJobsLockedJobs: lockedList }, () => {
-            if (cor3AutomationAllowed()) window.location.reload();
-          });
-        });
+        if(event.origin!==location.origin || !cor3AutomationAllowed() || !autoJobTask?.valid() || event.data.runTicket!==autoJobTask.id)return;
+        const locked=event.data.lockedJob,scope=networkScope();
+        if(locked?.jobId && scope){
+          void Cor3CenterStore.get("autoJobsLockedJobs").then(prev=>{
+            const current=networkScope();
+            if(scope.accountId!==current?.accountId || scope.documentId!==current.documentId)return;
+            const list=(prev.autoJobsLockedJobs||[]).filter(j=>j.jobId!==locked.jobId);
+            return Cor3CenterStore.set({autoJobsLockedJobs:[...list,locked]});
+          }).catch(()=>{});
+        }
+        runtimeLog?.log('page.ice-wait','ICE Wall 等待安全通道，观察页面是否恢复');
+
       }
       if (event.data && event.data.type === "COR3_ALL_MARKETS_REFRESHED") {
         setMarketRefreshInProgress(false);
@@ -4204,6 +4315,7 @@
     if (area !== "local" || !changes.autoSendMerc) return;
     relayMercInsurance();
     const newVal = changes.autoSendMerc.newValue || {};
+    rememberMercInterval(newVal);
     if (newVal.enabled) {
       console.log("[COR3 Helper] Auto-send settings changed \u2014 checking expedition data");
       Cor3CenterStore.get("expeditionsData", (result) => {
@@ -4229,7 +4341,7 @@
     dailySession = null;
     globalThis.Cor3InPageControls?.stopAutoMarket();
     network().cancel();dailyNetworkTask=null;
-    observedCredits = undefined;
+    observedCredits = undefined;mercCreditHold=null;mercCheckScope=null;mercCheckAt=0;recoveryDisabled=false;lastPageWait=null;recoveryMonitor?.reset();
     _automationQueue = [];
     _automationActive = null;
     _broadcastQueueStatus();

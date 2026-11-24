@@ -1,3 +1,19 @@
+# Relay 2.3.8
+
+Chrome and Edge each passed 635 regression tests from their generated packages.
+The typed reference passed 450 tests. Type checking, lint and builds passed for
+both the public runtime and the typed reference.
+
+Each public archive contains 82 extension files. The archive entries matched the
+tested build hashes. The Chrome and Edge manifests request the same permissions
+and hosts as their corresponding 2.3.0 manifests.
+
+The ICE Wall module extracted from each ZIP completed three rounds with three
+clicks in its browser engine on a local synthetic page with the module's timer
+callbacks suspended. The recovery fixtures exercised repeated connection stalls
+and independent Daily and maintenance activity. A physical display-off overnight
+run on a real game account remains unverified.
+
 # Relay 2.3.0 validation
 
 On Windows with Node 24.14.1 the Chrome and Edge package suites each passed 600

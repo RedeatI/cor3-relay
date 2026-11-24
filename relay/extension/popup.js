@@ -6499,8 +6499,36 @@
       batchBtn.id = "maintForceSelectedBtn";
       batchBtn.textContent = "Force selected!";
       batchBtn.title = "Force maintenance on all checked servers (furthest first)";
-      batchBtn.addEventListener("click", () => handleForceMaintenanceBatch());
-      bottomRow.appendChild(batchBtn);
+      const all = document.createElement("input");
+      all.type="checkbox";
+      const allLabel=document.createElement("label");
+      allLabel.append(all,document.createTextNode(t("Select all available", "全选可维护目标")));
+      const review=document.createElement("p");
+      review.setAttribute("aria-live","polite");
+      let reviewed=null;
+      const choices=()=>Array.from(valuableContentMaintenance.querySelectorAll(".maint-checkbox:not(:disabled)"));
+      const reset=()=>{
+        reviewed=null;
+        review.textContent="";
+        const boxes=choices(),count=boxes.filter(box=>box.checked).length;
+        all.checked=boxes.length>0&&count===boxes.length;
+        all.indeterminate=count>0&&count<boxes.length;
+        batchBtn.disabled=!count;
+        batchBtn.textContent=t("Review selected","核对所选目标");
+      };
+      all.addEventListener("change",()=>{for(const box of choices())box.checked=all.checked;reset();});
+      for(const box of choices())box.addEventListener("change",reset);
+      batchBtn.addEventListener("click",()=>{
+        const selected=choices().filter(box=>box.checked);
+        const ids=JSON.stringify(selected.map(box=>box.dataset.serverId));
+        if(!selected.length){reset();return;}
+        if(reviewed===ids){reviewed=null;void handleForceMaintenanceBatch();return;}
+        reviewed=ids;
+        review.textContent=selected.map(box=>box.dataset.serverName).join(" · ");
+        batchBtn.textContent=t("Confirm maintenance","确认维护")+" ("+selected.length+")";
+      });
+      reset();
+      bottomRow.append(allLabel,review,batchBtn);
       valuableContentMaintenance.appendChild(bottomRow);
     }
     function updateTimers() {

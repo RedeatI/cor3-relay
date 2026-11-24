@@ -688,6 +688,11 @@
       const effect = projectEffect && projectEffect.project(eventName, payload);
       if (effect) window.postMessage(effect, location.origin);
     } catch (_) { /* Proof absence never interrupts the original helper or implies success. */ }
+    if (eventName==='drone-build' && socket && trackedSockets.includes(socket) && !expiredSockets.has(socket) && cor3AutomationAllowed()){
+      const action=payload?.event?.action;
+      const snapshot=globalThis.Cor3PageLifetime?.wings(action,payload?.data);
+      if(snapshot)window.postMessage({type:'COR3_WINGS_SNAPSHOT',action,snapshot},location.origin);
+    }
     if (handleDroneMessage(eventName, payload)) return;
     if (eventName === "error" && payload && payload.message === "token-expired") {
       if (!socket || socket.__cor3IsMinigame || !trackedSockets.includes(socket) || expiredSockets.has(socket)) return;

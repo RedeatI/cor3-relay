@@ -84,16 +84,16 @@
         timeoutMs = timeoutMs || 10000;
         parent = parent || document;
         // Lifecycle-owned polling leaves no observer or raw timeout after stop.
-        for (let elapsed = 0; elapsed <= timeoutMs;) {
+        const deadline = Date.now() + timeoutMs;
+        while (true) {
             assertActive();
+            if (parent.isConnected === false) return null;
             const el = parent.querySelector(selector);
             if (el) return el;
-            if (elapsed === timeoutMs) return null;
-            const delay = Math.min(100, timeoutMs - elapsed);
-            await sleep(delay);
-            elapsed += delay;
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) return null;
+            await sleep(Math.min(100, remaining));
         }
-        return null;
     }
 
     // --- Click helper with React-compatible event dispatch ---
@@ -178,23 +178,10 @@
     }
 
     function clickCheckbox(entryEl) {
-        if (!masterAllowed()) return false;
-        const input = entryEl.querySelector('input[type="checkbox"]') ||
-                       entryEl.querySelector('.checkbox input') ||
-                       entryEl.querySelector('[role="checkbox"]') ||
-                       entryEl.querySelector('input');
-        if (!input) return false;
-        if (input.tagName === 'INPUT' && input.type === 'checkbox') {
-            if (!input.checked) {
-                input.checked = true;
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                input.dispatchEvent(new Event('change', { bubbles: true }));
-                input.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-            }
-            return true;
-        }
-        input.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-        return true;
+        const input = entryEl.querySelector('input[type="checkbox"]');
+        if (!masterAllowed() || !input || input.disabled) return false;
+        if (!input.checked) input.click();
+        return input.checked;
     }
 
     function findErrorTypeButton(container, label) {
@@ -207,7 +194,10 @@
         count = count || 2;
         for (let i = 0; i < count; i++) {
             await sleep(300);
-            const closeBtn = document.querySelector('[data-component-name="close-app-btn"]');
+            const panels = [...document.querySelectorAll('[data-component-name="ApplicationWindow"]')];
+            const own = panels.reverse().find(panel => /^(?:Game Center|Daily Ops|Daily Operations|Daily Task|System Log Integrity|Log Integrity Check|Signal Decode|Signal Hack|游戏中心|日常行动|每日行动|系统日志完整性|信号解码|信号破解)$/i.test(
+                panel.querySelector('[data-component-name="ApplicationTitleText"]')?.textContent?.trim() || ''));
+            const closeBtn = own?.querySelector('[data-component-name="close-app-btn"]');
             if (closeBtn) {
                 click(closeBtn);
                 hlog('Closed window ' + (i + 1));
@@ -479,88 +469,76 @@
     // =============================================
     // System Log Integrity — full end-to-end
     // =============================================
+    function logTaskWindow() {
+        const windows = [...document.querySelectorAll('[data-component-name="ApplicationWindow"]')].filter(el =>
+            /系统日志完整性|System Log Integrity|Log Integrity Check/i.test(
+                el.querySelector('[data-component-name="ApplicationTitleText"]')?.textContent || '') ||
+            el.querySelector('.log-entries'));
+        return windows.length === 1 ? windows[0] : null;
+    }
+
+    function logSelection(panel) {
+        const rows = [...panel.querySelectorAll('.log-entries .log-entry')];
+        const target = panel.textContent.match(/(?:Select\s+|选择\s*)(\d+)\s*(?:log entr|条)/i) ||
+            panel.textContent.match(/(?:SELECTED|已选择|已选)\s*[:：]?\s*\d+\s*\/\s*(\d+)/i);
+        const required = target ? Number(target[1]) : 0;
+        const invalid = [];
+        for (const el of rows) {
+            const text = el.querySelector('.log-line')?.textContent?.trim();
+            if (!text) continue;
+            const issues = analyzeLogLine(text);
+            if (issues.length) invalid.push({el, text, issues});
+        }
+        return {count:rows.length, required, invalid};
+    }
+
     async function solveSystemLogIntegrityFull() {
-        diag('solve.log', 'System Log Integrity solver started', {
-            getLogs: selectorInfo('.go190644802')
-        });
+        diag('solve.log', 'Waiting for the log integrity task');
+        const panelDeadline = Date.now() + 15000;
+        let panel;
+        while (!(panel = logTaskWindow()) && Date.now() < panelDeadline) await sleep(250);
+        if (!panel) return false;
 
-        // Step A: Click "Get Logs" button
-        const getLogsBtn = await waitForEl('.go190644802', 5000);
-        if (!getLogsBtn) {
-            diag('solve.log', 'Could not find Get Logs button', {
-                selector: selectorInfo('.go190644802')
-            }, 'error');
+        const deadline = Date.now() + 90000;
+        let requested = false, previous = '', snapshot, selected;
+        do {
+            assertActive();
+            if (!panel.isConnected) return false;
+            snapshot = logSelection(panel);
+            if (snapshot.required > 0 && snapshot.invalid.length === snapshot.required &&
+                snapshot.invalid.every(row => {const box=row.el.querySelector('input[type="checkbox"]'); return box && !box.disabled;})) {
+                const signature = JSON.stringify(snapshot.invalid.map(row => row.text));
+                if (signature === previous) { selected = snapshot.invalid; break; }
+                previous = signature;
+            } else {
+                previous = '';
+            }
+            if (!requested && !panel.querySelector('.log-entries')) {
+                const button = [...panel.querySelectorAll('button,[role="button"],.go190644802')].find(el =>
+                    /^(?:get logs|获取日志|读取日志)$/i.test(el.textContent.trim()) || el.matches('.go190644802'));
+                if (button && !button.disabled && button.getClientRects().length) {
+                    click(button);
+                    requested = true;
+                }
+            }
+            await sleep(350);
+        } while (Date.now() < deadline);
+        if (!selected) {
+            diag('solve.log', 'Timed out waiting for selectable log errors', {
+                rows:snapshot.count, required:snapshot.required, found:snapshot.invalid.length
+            }, 'warn');
             return false;
         }
-        click(getLogsBtn);
-        diag('solve.log', 'Clicked Get Logs');
-        await sleep(4000);
-        // Step B: Wait for pulse timeline and decode
-        const log_entries = await waitForEl('.log-entries', 10000);
-        if (!log_entries) {
-            diag('solve.log', 'Could not find log-entries after Get Logs', {
-                logEntries: selectorInfo('.log-entries')
-            }, 'error');
-            return false;
-        }
-        const logContainer = document.querySelector('.log-entries');
-        if (!logContainer) {
-            diag('solve.log', 'Could not find log-entries container', null, 'error');
-            return false;
-        }
-        const entries = Array.from(logContainer.querySelectorAll('.log-entry.log-entry-appearing'));
-        diag('solve.log', 'Log entries collected', {
-            appearing: entries.length,
-            allEntries: logContainer.querySelectorAll('.log-entry').length
-        });
-        if (!entries.length) {
-            diag('solve.log', 'No .log-entry.log-entry-appearing elements found', {
-                logEntries: selectorInfo('.log-entries')
-            }, 'error');
-            return false;
-        }
-
-        const analyzed = entries.map(el => {
-            const textEl = el.querySelector('span') || el.querySelector('.log-line') || el;
-            const text = (textEl?.textContent || '').trim();
-            return { el, text, issues: analyzeLogLine(text) };
-        }).filter(e => e.issues.length > 0);
-
-        analyzed.sort((a, b) => b.issues.length - a.issues.length);
-        const selected = analyzed.slice(0, 2);
-        diag('solve.log', 'Invalid log entries analyzed', {
-            total: entries.length,
-            invalid: analyzed.length,
-            selected: selected.length,
-            details: analyzed.map(e => ({ text: e.text.slice(0, 160), issues: e.issues }))
-        });
-        if (selected.length === 0) {
-            diag('solve.log', 'No invalid log entries found — puzzle may already be solved', null, 'warn');
-            return false;
-        }
-        if (selected.length < 2) diag('solve.log', 'Only found fewer than 2 invalid logs', { count: selected.length }, 'warn');
-
-        for (const entry of selected) {
-            clickCheckbox(entry.el);
-        }
-
-        hlog(`Selected ${selected.length} wrong log(s)`);
-        selected.forEach((e, i) => {
-            console.log(`[SELECTED #${i + 1}] ${e.text}`);
-            e.issues.forEach(iss => console.log(`  - ${ERROR_LABELS[iss] || iss}`));
-        });
-
-        // Click confirm button
-        const confirmSelectionBtn = document.querySelector('.confirm-button');
-        if (!confirmSelectionBtn) {
-            hlog('Could not find .confirm-button', 'error');
-            return false;
-        }
+        const extras = [...panel.querySelectorAll('.log-entry input:checked')].some(
+            box => !selected.some(row => row.el.contains(box)));
+        if (extras || !selected.every(row => clickCheckbox(row.el))) return false;
+        const confirmSelectionBtn = panel.querySelector('.confirm-button');
+        if (!confirmSelectionBtn || confirmSelectionBtn.disabled) return false;
         click(confirmSelectionBtn);
-        await sleep(1000);
+        await sleep(500);
 
         // Handle analysis/fix phase
-        const analysisContainer = await waitForEl('.analysis-container', 5000);
+        const analysisContainer = await waitForEl('.analysis-container', 15000, panel);
         if (!analysisContainer) {
             hlog('Could not find .analysis-container after confirming', 'error');
             return false;
@@ -571,8 +549,8 @@
             count: blocks.length,
             analysisContainer: selectorInfo('.analysis-container')
         });
-        if (!blocks.length) {
-            diag('solve.log', 'No .error-analysis-block found', null, 'error');
+        if (blocks.length !== selected.length) {
+            diag('solve.log', 'Analysis does not match the selected entries', {count:blocks.length}, 'warn');
             return false;
         }
 
@@ -589,10 +567,11 @@
             }
             if (!issues || !issues.length) {
                 console.log('[COR3 Daily Hack] Could not map analysis block to picked issues:', lineText);
-                continue;
+                return false;
             }
 
             const fixBtn = block.querySelector('.fix-error-button');
+            if (!fixBtn) return false;
             if (fixBtn) {
                 click(fixBtn);
                 await sleep(50);
@@ -604,6 +583,7 @@
                         await sleep(25);
                     } else {
                         console.log('[COR3 Daily Hack] Could not find error-type-button for:', label);
+                        return false;
                     }
                 }
                 hlog(`Fixed: ${lineText.substring(0, 40)}...`);
@@ -611,8 +591,8 @@
         }
         await sleep(1000);
         // Click confirm button
-        const confirmFixesBtn = document.querySelector('.confirm-button');
-        if (!confirmFixesBtn) {
+        const confirmFixesBtn = panel.querySelector('.confirm-button');
+        if (!confirmFixesBtn || confirmFixesBtn.disabled) {
             hlog('Could not find .confirm-button', 'error');
             return false;
         }
@@ -620,7 +600,7 @@
 
         await sleep(1000);
         // Click confirm button
-        const scanBtn = document.querySelector('.scan-button');
+        const scanBtn = await waitForEl('.scan-button', 10000, panel);
         if (!scanBtn) {
             hlog('Could not find .confirm-button', 'error');
             return false;
@@ -629,7 +609,7 @@
 
         // Wait for result
         await sleep(1500);
-        const resultTitle = document.querySelector('.result-title');
+        const resultTitle = await waitForEl('.result-title', 15000, panel);
         if (resultTitle && resultTitle.classList.contains('success')) {
             diag('solve.log', 'System Log Integrity VERIFIED — Success!', {
                 result: (resultTitle.textContent || '').trim()
@@ -645,10 +625,10 @@
             }, 'warn');
         }
 
-        // Close windows
+        if (!resultTitle) return 'verify-claim';
+        if (!resultTitle.classList.contains('success')) return false;
         await sleep(500);
         await closeAppWindows(3);
-
         return true;
     }
 
@@ -690,6 +670,10 @@
     const MAX_ATTEMPTS = 3;
 
     async function attemptSolve() {
+        if (logTaskWindow()?.querySelector('.log-entries')) {
+            const solved = await solveSystemLogIntegrityFull();
+            return {success:solved === true, verifyClaim:solved === 'verify-claim'};
+        }
         diag('attempt.start', 'Starting Daily Ops attempt', {
             url: location.href,
             tabBar: tabBarSnapshot(),
@@ -753,6 +737,7 @@
             solved = false;
         }
 
+        if (puzzle === 'log') return {success:solved === true, verifyClaim:solved === 'verify-claim'};
         // Verify success by checking for .result-title.success
         const resultTitle = document.querySelector('.result-title');
         if (resultTitle && resultTitle.classList.contains('success')) {
@@ -789,6 +774,12 @@
                 break;
             }
 
+            if (result.verifyClaim) {
+                hlog('Submitted log check; verifying the Daily claim', 'info', 'claim.verify');
+                if (masterAllowed()) window.postMessage({type:'COR3_DAILY_HACK_RUN_FINISHED',lifecycleTicket,success:false,reason:'verify_claim'}, location.origin);
+                cleanup();
+                return;
+            }
             if (result.success) {
                 hlog('✅ Daily hack completed successfully!', 'success');
                 // Keep the persistent toggle enabled and let the scheduler pick the next check.

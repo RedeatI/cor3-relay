@@ -1,4 +1,4 @@
-# COR3 Relay 2.3.0
+# COR3 Relay 2.3.8
 
 Chrome and Edge compatibility runtime. See the [architecture decision](../docs/architecture/relay-runtime-import.md)
 for its relationship to the upstream TypeScript rewrite.

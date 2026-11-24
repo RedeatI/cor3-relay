@@ -35,3 +35,15 @@ test('the next click opens the panel even when dragging did not produce a click 
  button.emit('pointerdown',{button:0,currentTarget:button,target:button,clientX:120,clientY:40,pointerId:2});
  button.emit('pointerup');button.emit('click',{detail:1});assert.equal(f.shell.isOpen(),true);
 });
+
+test('tab changes reset scroll but showing the same tab preserves the reading position', () => {
+ const {shell,shadow}=fixture();
+ const panel=shadow.getElementById('window');
+ shell.show('operations');
+ panel.scrollTop=243;
+ shell.show('tasks');
+ assert.equal(panel.scrollTop,0);
+ panel.scrollTop=27;
+ shell.show('tasks');
+ assert.equal(panel.scrollTop,27);
+});

@@ -1,3 +1,12 @@
+# Relay 2.3.1 upstream adaptations
+
+The review compared SaltApocalypse v2.0.7-salta (already integrated below)
+and huoyan1231/cor3-helper-v2 v2.4.3. The latter contributes the Wings of
+Mars history, current requirements and 15-stage materials reference, the
+expedition retry interval, credit-shortage handling and maintenance selection.
+Relay displays Daily and drone timestamps from the account cache and reuses
+its existing scoped settings store, read coordinator and session checks.
+
 # Upstream review for Relay 2.3.0
 
 Reviewed SaltApocalypse v2.0.6 and v2.0.7 through commit

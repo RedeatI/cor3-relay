@@ -41,10 +41,8 @@
 	// --- DOM Detection --------------------------------------------------------
 
 	function findIceWallApp() {
-		return document.querySelector(
-			'[data-component-name="IceWallBreakApplication"], ' +
-			'[data-sentry-component="IceWallBreakApplication"]'
-		);
+		const nodes=document.querySelectorAll('[data-component-name="IceWallBreakApplication"],[data-sentry-component="IceWallBreakApplication"]');
+        return Array.from(nodes).find(node=>node.getClientRects().length && getComputedStyle(node).visibility==='visible')||null;
 	}
 
 	// --- Glyph Fingerprinting -------------------------------------------------
@@ -357,20 +355,15 @@
 	function waitForUniqueCandidate(app, previous, rejected, timeout) {
 		return new Promise(resolve => {
 			let lastRound = null;
-			let observedBoard = null;
-			let debounceTimer = null;
 			let settled = false;
 			const deadline = Date.now() + timeout;
-			const observer = new MutationObserver(() => {
-				if (settled) return;
-				clearTimeout(debounceTimer);
-				debounceTimer = setTimeout(sample, 60);
-			});
+			// Observer callbacks already batch DOM writes. A hidden Chrome tab can
+			// postpone even a 60 ms debounce until the next minute.
+			const observer = new MutationObserver(sample);
 
 			function finish(result) {
 				settled = true;
 				observer.disconnect();
-				clearTimeout(debounceTimer);
 				clearInterval(poll);
 				document.removeEventListener('visibilitychange', sample);
 				resolve(result);
@@ -389,11 +382,6 @@
 				}
 				if (round && isNewRound(previous, round)) {
 					lastRound = round;
-					if (round.board !== observedBoard) {
-						observer.disconnect();
-						observer.observe(round.board, { subtree: true, childList: true, attributes: true });
-						observedBoard = round.board;
-					}
 					const anchor = matchRound(round, rejected);
 					if (anchor) return finish({ phase: 'match', round, anchor });
 				}
@@ -401,6 +389,8 @@
 			}
 
 			const poll = setInterval(sample, 150);
+			observer.observe(app, {subtree:true,childList:true,characterData:true,attributes:true,
+				attributeFilter:['transform','d','x','y','width','height','fill','fill-opacity','style','viewBox']});
 			document.addEventListener('visibilitychange', sample);
 			sample();
 		});
@@ -419,21 +409,34 @@
 		return notices;
 	}
 
-	async function waitForRoundResult(app, round, priorNotices) {
+	function waitForRoundResult(app, round, priorNotices) {
 		const deadline = Date.now() + 4000;
-		while (masterAllowed() && findIceWallApp() === app) {
-			const counts = getRoundCounts(app);
-			if (counts && counts.completed > round.completed &&
-				(!window.__iceWallGameEnded || counts.completed === counts.total)) return 'advanced';
-			if (window.__iceWallGameEnded) return 'stopped';
-			if (counts?.completed === round.completed) {
-				const rejected = [...mismatchNotices(app)].some(([line, count]) => count > (priorNotices.get(line) || 0));
-				if (rejected) return 'rejected';
+		return new Promise(resolve => {
+			let settled = false;
+			const observer = new MutationObserver(sample);
+			const poll = setInterval(sample, 100);
+			function finish(result) {
+				settled = true;
+				observer.disconnect();
+				clearInterval(poll);
+				document.removeEventListener('visibilitychange',sample);
+				resolve(result);
 			}
-			if (Date.now() >= deadline) break;
-			await sleep(100);
-		}
-		return gameActive(app) ? 'advance-unconfirmed' : 'stopped';
+			function sample() {
+				if (settled) return;
+				if (!masterAllowed() || findIceWallApp() !== app) return finish('stopped');
+				const counts = getRoundCounts(app);
+				if (counts && counts.completed > round.completed &&
+					(!window.__iceWallGameEnded || counts.completed === counts.total)) return finish('advanced');
+				if (window.__iceWallGameEnded) return finish('stopped');
+				if (counts?.completed === round.completed &&
+					[...mismatchNotices(app)].some(([line,count]) => count > (priorNotices.get(line) || 0))) return finish('rejected');
+				if (Date.now() >= deadline) finish('advance-unconfirmed');
+			}
+			observer.observe(app,{subtree:true,childList:true,characterData:true});
+			document.addEventListener('visibilitychange',sample);
+			sample();
+		});
 	}
 
 	// --- Solve one round and confirm the game's counter -----------------------
@@ -511,7 +514,6 @@
 
 	let pendingMinigameData = null;
 	const solverListeners = [];
-
 	// External API: await window.awaitIceWallSolver() to wait for solver to finish
 	window.awaitIceWallSolver = function () {
 		return new Promise(function (resolve) {
@@ -545,9 +547,13 @@
 			'color: #888; font-style: italic'
 		);
 
-		while ((masterAllowed() && !window.__iceWallSolverAbort)) {
+		let handledApp=null, handledGeneration=-1;
+        while ((masterAllowed() && !window.__iceWallSolverAbort)) {
 			const app = findIceWallApp();
-			if (app) {
+			if (!app) handledApp=null;
+            if (app && (app!==handledApp || gameGeneration!==handledGeneration)) {
+                handledApp=app;
+                handledGeneration=gameGeneration;
 				// Reset game-ended flag for this new game session
 				window.__iceWallGameEnded = false;
 				var currentGen = gameGeneration;
@@ -567,7 +573,7 @@
 						'color: #888; font-style: italic'
 					);
 				}
-				while ((masterAllowed() && !window.__iceWallSolverAbort) && !window.__iceWallGameEnded && findIceWallApp()) {
+				while ((masterAllowed() && !window.__iceWallSolverAbort) && !window.__iceWallGameEnded && findIceWallApp()===app) {
 					// Also break out if a new game generation started
 					if (gameGeneration !== currentGen) break;
 					await sleep(100);
@@ -586,7 +592,7 @@
 					);
 				}
 
-				pendingMinigameData = null;
+				if(gameGeneration===currentGen)pendingMinigameData = null;
 			}
 
 			await sleep(250);

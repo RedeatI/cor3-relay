@@ -5,7 +5,7 @@
  const nonce=()=>Array.from(root.crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,'0')).join('');
  const clock=()=>root.performance?.now?.()??Date.now();
  const stableCheckMs=60000,unreadyCheckMs=15000,firstRetryMs=2000,maxRetryMs=30000;
- let documentId=null,last=null,hard=false,observedIdentity=null,scanTimer=null;
+ let documentId=null,last=null,hard=false,observedIdentity=null,scanTimer=null,nextBindingRepair=0;
  const bad=(code,count=0)=>({code,count});
  function inspect(){try{
   if(hard)return bad('CENTER_IDENTITY_REVOKED');
@@ -20,7 +20,7 @@
  }catch{return bad('CENTER_IDENTITY_UNAVAILABLE')}}
  function invalidate(code='CENTER_ACCOUNT_NOT_READY'){
   connection={code};const old=documentId;if(!old)return;
-  ++noticeSequence;announced=null;documentId=null;last=null;resetRetry();schedule();
+  ++noticeSequence;announced=null;documentId=null;last=null;nextBindingRepair=0;resetRetry();schedule();
   try{Promise.resolve(api.runtime.sendMessage({type:'cor3-center-revoked',documentId:old})).catch(()=>{})}catch{}
  }
  function refresh(){const current=inspect();if(current.code){invalidate(current.code);return current;}if(last&&(last.account!==current.account||last.url!==current.url))invalidate();if(!documentId){documentId=nonce();schedule();}last=current;return {...current,documentId};}
@@ -51,6 +51,15 @@
  }
  function check(){if(!hard){announce(refresh());schedule();}}
  function reconnect(){announced=null;resetRetry();if(announcementFlight)reconnectRequested=true;else check();}
+ // The worker may have lost a binding that this document previously announced.
+ function recheckBinding(expectedDocument){
+  if(hard||announcementFlight||connection.code!=='CENTER_CONNECTED'||!expectedDocument||
+     expectedDocument!==announced||clock()<nextBindingRepair)return;
+  if(refresh().documentId!==expectedDocument)return;
+  nextBindingRepair=clock()+maxRetryMs;
+  connection={code:'CENTER_ACCOUNT_NOT_READY'};
+  reconnect();
+ }
  function visible(){if(!root.document.hidden)check();}
  function revoke(){if(hard)return;hard=true;invalidate();observer.disconnect();schedule();root.document.removeEventListener?.('visibilitychange',visible);}
  const listener=(m,sender)=>{
@@ -76,6 +85,6 @@
  });
  api.runtime.onMessage.addListener(listener);for(const e of ['pagehide','popstate','hashchange'])root.addEventListener(e,revoke,{once:true});
  root.addEventListener('focus',check);root.addEventListener('pageshow',check);root.document.addEventListener?.('visibilitychange',visible);
- root.Cor3CenterIdentity=Object.freeze({status:()=>({...connection}),snapshot(){const current=refresh();return current.code?null:Object.freeze({accountId:current.account,documentId:current.documentId,url:current.url});}});
+ root.Cor3CenterIdentity=Object.freeze({recheckBinding,status:()=>({...connection}),snapshot(){const current=refresh();return current.code?null:Object.freeze({accountId:current.account,documentId:current.documentId,url:current.url});}});
  check();
 })(globalThis);

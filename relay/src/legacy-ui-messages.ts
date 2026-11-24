@@ -1185,6 +1185,18 @@ export const LEGACY_MESSAGES: readonly (readonly [string, string])[] = [
     "运行“开始搜索贵重物品”以查看服务器维护状态。如果搜索后没有显示服务器，则没有即将进行或正在进行的维护。"
   ],
   [
+    "Select all available",
+    "全选可维护目标"
+  ],
+  [
+    "Review selected",
+    "核对所选目标"
+  ],
+  [
+    "Confirm maintenance",
+    "确认维护"
+  ],
+  [
     "■ Stop Valuable Search",
     "■ 停止搜索贵重物品"
   ],

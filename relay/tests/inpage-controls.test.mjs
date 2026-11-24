@@ -53,3 +53,18 @@ test('recent task errors are readable without starting tasks and never project c
 
 test('automatic market default and saved off preference do not alter expedition, daily, pause or solver settings',async()=>{const f=fixture(),before=structuredClone({merc:f.data.autoSendMerc,drone:f.data.autoDrone,markets:f.data.autoUpdateMarkets,daily:f.data.autoDailyHackEnabled,helper:f.data.helperMode});assert.equal((await f.client.read()).jobs.autoEnabled,true);await f.client.saveAutoMarket(false,['Data Download'],f.scope());assert.equal((await f.client.read()).jobs.autoEnabled,false);assert.deepEqual({merc:f.data.autoSendMerc,drone:f.data.autoDrone,markets:f.data.autoUpdateMarkets,daily:f.data.autoDailyHackEnabled,helper:f.data.helperMode},before);assert.equal(f.requests.length,0);});
 test('automatic market preference requires the same admitted account and an explicit nonempty enabled type selection',async()=>{const f=fixture(),scope=f.scope();await assert.rejects(f.client.saveAutoMarket(true,[],scope),/TYPES_EMPTY/);await assert.rejects(f.client.saveAutoMarket(true,['invented action'],scope),/SETTING_INVALID/);f.changeScope();await assert.rejects(f.client.saveAutoMarket(true,['Data Download'],scope),/PAGE_CHANGED/);assert.equal(f.writes.length,0);});
+
+test('a background equipment recheck observes the late result without opening C3 or duplicating the write',async()=>{
+ const f=fixture();f.mode('unconfirmed');await f.client.equip('hardware','cpu-new',true,f.scope());await flush();
+ assert.equal(f.network.snapshot().blocked,'equipment-unconfirmed');
+ f.data.loadoutData.equippedHardware.cpu=f.data.loadoutData.ownedHardware[1];f.data.loadoutUpdatedAt=f.clock();
+ await f.client.recheckEquipment();assert.equal(f.network.current(),null);
+ assert.equal(f.requests.filter(r=>r.action==='equipHardware').length,1);
+});
+test('page reload opt-out and expedition fallback interval are bound to the current document',async()=>{
+ const f=fixture(),scope=f.scope();await f.client.saveAutoReload(false,scope);
+ await f.client.saveMerc({checkIntervalMinutes:12},scope);
+ assert.equal(f.data.pageAutoReloadEnabled,false);assert.equal(f.data.autoSendMerc.checkIntervalMinutes,12);assert.equal(f.data.autoSendMerc.enabled,false);
+ await assert.rejects(f.client.saveMerc({checkIntervalMinutes:4},scope));f.changeScope();
+ await assert.rejects(f.client.saveAutoReload(true,scope));assert.equal(f.data.pageAutoReloadEnabled,false);
+});

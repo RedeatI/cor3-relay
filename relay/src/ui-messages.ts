@@ -1,6 +1,26 @@
 // Relay-specific UI and diagnostic copy. Game identifiers stay unchanged.
 export const RELAY_MESSAGES: readonly (readonly [string, string])[] = `
 任务|Tasks
+自动刷新游戏页|Automatically reload game page
+后台空闲满 6 小时，或确认页面卡住时刷新|Reload after 6 hours idle in the background or a confirmed stall
+远征兜底检查间隔（分钟）|Expedition fallback check interval (minutes)
+首次请在游戏中打开无人机建造任务|Open Wings of Mars in the game to capture its first snapshot
+后台空闲刷新|Background idle reload
+启动读取恢复|Startup read recovery
+ICE Wall 等待超时|ICE Wall connection timeout
+终端连接超时|Terminal connection timeout
+终端正在连接，持续 3 分钟无进展后刷新|Terminal is connecting. Reloads after 3 minutes without progress.
+ICE Wall 正在连接，持续 3 分钟无进展后刷新|ICE Wall is connecting. Reloads after 3 minutes without progress.
+终端正在连接，自动刷新已关闭|Terminal is connecting; automatic reload is off
+远征名单读取已超时，观察中|Expedition roster timed out; monitoring
+远征名单读取已超时，保留当前任务|Expedition roster timed out; current activity protected
+远征名单读取已超时，自动刷新已关闭|Expedition roster timed out; automatic reload is off
+ICE Wall 正在连接，自动刷新已关闭|ICE Wall is connecting. Automatic reload is off.
+远征名单读取持续超时，已保留当前操作或排队任务|Expedition roster is still overdue. Pending work is protected.
+远征名单读取超时|Expedition roster read timeout
+配装回执超时|Equipment confirmation timeout
+今日已领取|Claimed today
+今日未领取|Unclaimed today
 操作|Operations
 状态|Status
 界面语言|Interface language
@@ -460,6 +480,10 @@ IP 清理|IP Cleanup
 功能参数未读取|Ability parameters not read
 此类装备为空|No items in this category
 当前类型未安装硬件|No hardware installed in this category
+无人机建造进度|Drone construction progress
+账号确认后显示自动调度状态|Market scheduling status will appear once the account is verified.
+正在核对账号，显示上次读取的设置|Verifying the account. Showing the last known settings.
+各阶段材料参考|Materials by stage (reference)
 其他|Other
 数值|Value
 入侵|Hack

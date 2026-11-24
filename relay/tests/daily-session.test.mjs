@@ -26,6 +26,69 @@ test('early session event lost before the isolated listener is recovered after v
  assert.equal(f.data.dailyOpsData.hasClaimedToday,true);assert.equal(f.requests.length,1);
  assert.ok(f.logs.some(e=>e.step==='session.ready'));assert.ok(!JSON.stringify(f.logs).includes('synthetic-fixture'));
 });
+
+const dailySolver=src('daily-hack-solver.js');
+test('Daily selector waits count time spent with the browser minimized',async()=>{
+ const code=dailySolver.slice(dailySolver.indexOf('    async function waitForEl('),dailySolver.indexOf('    // --- Click helper'));
+ let now=0,wakes=0;
+ const ctx=vm.createContext({Date:{now:()=>now},assertActive(){},document:{querySelector:()=>null},
+   sleep:async()=>{now+=60000;wakes++;}});
+ assert.equal(await vm.runInContext(code+';waitForEl("button",5000)',ctx),null);
+ assert.equal(wakes,1);
+});
+function logPuzzleFixture(rows, limit=2, succeed=true) {
+  let now=0,confirmations=0,scans=0,closed=0;
+  const entries=rows.map(text=>{
+    const line={textContent:text},box={checked:false,disabled:false,click(){this.checked=!this.checked;}};
+    return {box,querySelector(sel){return sel==='.log-line'?line:box;},contains(el){return el===box;}};
+  });
+  const result=succeed===null ? null : {classList:{contains:()=>succeed},textContent:succeed?'Success':'Failed'};
+  const button={disabled:false},analysis={querySelectorAll(){return rows.slice(2).map(text=>({
+    querySelector:sel=>sel==='.log-line-display'?{textContent:text}:{}
+  }));}};
+  const panel={textContent:'Select '+limit+' log entries that contain format violations.',isConnected:true,
+    querySelector(sel){return ({'.log-entries':{},'.confirm-button':button,'.result-title':result})[sel]||null;},
+    querySelectorAll(sel){if(sel.includes('input:checked'))return [];return now<14000?entries.slice(0,2):entries;}
+  };
+  const ctx=vm.createContext({Date:{now:()=>now},panel,document:{querySelectorAll:()=>[{...panel,querySelector:s=>s.includes('ApplicationTitleText')?{textContent:'System Log Integrity'}:panel.querySelector(s)}]},
+    masterAllowed:()=>true,assertActive(){},sleep:async ms=>{now+=ms;},diag(){},hlog(){},selectorInfo:()=>({}),findErrorTypeButton:()=>({}),console:{log(){}},
+    click(el){if(el===button)confirmations++;else if(el?.scan)scans++;},
+    waitForEl:async selector=>selector==='.analysis-container'?analysis:selector==='.scan-button'?{scan:true}:result,
+    closeAppWindows:async()=>{closed++;}});
+  const part=(start,end)=>dailySolver.slice(dailySolver.indexOf(start),dailySolver.indexOf(end,dailySolver.indexOf(start)));
+  vm.runInContext(part('    const VALID_TYPES','    function findErrorTypeButton')+part('    function logTaskWindow','    // Detect puzzle type'),ctx);
+  return {run:()=>vm.runInContext('solveSystemLogIntegrityFull()',ctx),state:()=>({now,confirmations,scans,closed,checked:entries.filter(x=>x.box.checked).length})};
+}
+const earlyValid=['[00:01:00] SCAN /sector=12 /status=OK','[10:11:12] PING /sector=19 /status=WARN'];
+const lateInvalid=['[01:20:40] PING /status=OK','[02:00:02] ROUTE-CHCEK /sector=289 /status=ERROR'];
+test('Daily resumes an open log list and waits for both late errors',async()=>{
+ const f=logPuzzleFixture([...earlyValid,...lateInvalid]);assert.equal(await f.run(),true);
+ assert.equal(f.state().checked,2);assert.equal(f.state().scans,1);assert.ok(f.state().now>=14000);
+});
+test('Daily never submits incomplete or ambiguous log selections',async()=>{
+ for(const tail of [[lateInvalid[0]],[...lateInvalid,...lateInvalid]]){
+   const f=logPuzzleFixture([...earlyValid,...tail]);assert.equal(await f.run(),false);
+   assert.equal(f.state().checked,0);assert.equal(f.state().confirmations,0);
+ }
+});
+test('Daily requires a confirmed successful game result',async()=>{
+ const f=logPuzzleFixture([...earlyValid,...lateInvalid],2,false);assert.equal(await f.run(),false);assert.equal(f.state().closed,0);
+});
+test('A submitted Daily with no result leaves its windows alone and asks for claim verification',async()=>{
+ const f=logPuzzleFixture([...earlyValid,...lateInvalid],2,null);assert.equal(await f.run(),'verify-claim');assert.equal(f.state().scans,1);assert.equal(f.state().closed,0);
+});
+test('The scheduler confirms a missing Daily result from the account claim before marking success',()=>{
+ const block=content.slice(content.indexOf('  function handleDailyHackRunFinished'),content.indexOf('  function autoStartDailyHackOnLoad'));
+ for (const claimed of [true,false]) {
+  const statuses=[],reasons=[];
+  const ctx=vm.createContext({dailyEpoch:()=>1,dailyValid:()=>true,cor3AutomationAllowed:()=>true,releaseDailyHackLock(){},
+   setDailyHackResult:(s)=>statuses.push(s),Cor3CenterStore:{get:(keys,cb)=>cb({autoDailyHackEnabled:true}),set(){}},
+   withDailyToken:cb=>cb('synthetic',()=>true),fetchDailyClaimState:(_,cb)=>cb(null,{hasClaimedToday:claimed}),
+   scheduleDailyHackFromData:(d,r)=>reasons.push(r),scheduleDailyHackCheck:(_,r)=>reasons.push(r),DAILY_HACK_FALLBACK_DELAY_MS:1000,DAILY_HACK_RETRY_DELAY_MS:500});
+  vm.runInContext(block+';handleDailyHackRunFinished({success:false,reason:"verify_claim"})',ctx);
+  assert.deepEqual(statuses,claimed?['pending','success']:['pending']);assert.deepEqual(reasons,claimed?['success']:['claim_unconfirmed']);
+ }
+});
 test('paused session replay publishes no credential and cannot write account state',async()=>{
  const f=fixture();f.listen();vm.runInContext('setCapturedBearerToken("Bearer synthetic-fixture-only")',f.c);
  f.w.__cor3MasterGate.ready();await flush();assert.equal(f.messages.length,0);assert.deepEqual(f.data,{});

@@ -20,6 +20,7 @@ function puzzle({duplicate=false}={}) {
  };
  let now = 0, serial = 0, active = true;
  const timers = new Map(), clicks = [], statuses = [];
+ const observers = new Set();
  const counter = { textContent: '0/3' };
  const app = { innerText:"", querySelector(selector) {
   return ({[selectors.counter]:counter,[selectors.preview]:preview,[selectors.board]:board})[selector] ?? null;
@@ -55,7 +56,11 @@ function puzzle({duplicate=false}={}) {
  const ctx = {
   window, masterAllowed:()=>true, findIceWallApp:()=>active ? app : null,
   Date:{now:()=>now}, MouseEvent:class {},
-  MutationObserver:class { observe() {} disconnect() {} },
+  MutationObserver:class {
+   constructor(callback){ this.callback=callback; }
+   observe(node){ this.node=node;observers.add(this); }
+   disconnect(){ observers.delete(this); }
+  },
   document:{addEventListener(){},removeEventListener(){}},
   setTimeout:schedule, setInterval:(callback, delay) => schedule(callback,delay,delay),
   clearTimeout:id=>timers.delete(id), clearInterval:id=>timers.delete(id),
@@ -82,7 +87,11 @@ function puzzle({duplicate=false}={}) {
   now = end;
  }
  return {
-  app, ctx, clicks, statuses, timers, advance,
+  app, ctx, clicks, statuses, timers, advance, observers,
+  async render() {
+   for (const observer of [...observers]) if (observer.node===app) observer.callback();
+   await new Promise(setImmediate);
+  },
   start:()=>ctx.runIceWallSolver(),
   setCount:(completed,total=3)=>{counter.textContent=completed+'/'+total},
   setTarget:signature=>{preview=region(signature,0,'preview')},
@@ -213,4 +222,24 @@ test('an existing mismatch and an unconfirmed click do not trigger an alternate 
  await run;
  assert.deepEqual(f.clicks.map(click=>click.owner),['first']);
  assert.equal(f.statuses.at(-1).message,'Round did not advance; stopping this attempt');
+});
+
+test('a background tab can finish from reveals and counter changes before a single timer runs', async()=>{
+ const f=puzzle();
+ f.setBoard(undefined);
+ const run=f.start();
+ await f.render();
+ for (let i=0;i<3;i++) {
+  f.setTarget(10+i*10);
+  f.setBoard(10+i*10,'round-'+i);
+  await f.render();
+  await f.render();
+  assert.deepEqual(f.clicks.map(click=>click.owner),Array.from({length:i+1},(_,j)=>'round-'+j));
+  f.setCount(i+1);
+  await f.render();
+ }
+ assert.equal(f.statuses.at(-1).state,'complete');
+ await run;
+ assert.equal(f.observers.size,0);
+ assert.equal(f.timers.size,0);
 });

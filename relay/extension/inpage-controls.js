@@ -151,17 +151,22 @@
  <div class="grid"><label class="check"><input id="mercClaim" type="checkbox">自动领取</label><label class="check"><input id="mercDecide" type="checkbox">自动决策</label><label class="check"><input id="mercUsol" type="checkbox">USOL 优先</label><label class="check"><input id="mercCheapest" type="checkbox">优先最便宜</label></div>
  <p id="mercAvailability"></p><div class="choice"><label>雇佣兵</label><button id="mercenary" type="button" class="choice-trigger" aria-label="远征雇佣兵" aria-controls="mercenaryChoices" aria-expanded="false"></button><div id="mercenaryChoices" class="choice-list" role="group" aria-label="远征雇佣兵" hidden></div></div><div class="choice"><label>目的地</label><button id="destination" type="button" class="choice-trigger" aria-label="远征目的地" aria-controls="destinationChoices" aria-expanded="false"></button><div id="destinationChoices" class="choice-list" role="group" aria-label="远征目的地" hidden></div></div>
  <div class="grid"><label>每次总费用上限（CR）<input id="maxCost" type="number" min="0" max="999999" step="1"></label><label>低于此余额暂停（CR）<input id="minCredits" type="number" min="0" max="999999999" step="1"></label></div><small>启用时保存费用上限与余额下限；保险等其他设置保留。</small>
+ <label>远征兜底检查间隔（分钟）<input id="mercInterval" type="number" min="5" max="1440" step="1" value="30"></label><small id="mercRetry"></small>
  <p id="mercDirty"></p><button id="saveMerc">保存雇佣兵设置</button></fieldset></details>
  <details><summary>无人机远征</summary><fieldset id="droneForm"><p id="droneAvailability">无人机未读取</p><label class="check"><input id="droneEnabled" type="checkbox">无人机自动远征</label>
- <div class="grid"><label class="check"><input id="dronePaused" type="checkbox">暂停无人机</label><label class="check"><input id="droneAuto" type="checkbox">自动选择任务</label><label class="check"><input id="droneClaim" type="checkbox">无人机自动领取</label><label class="check"><input id="droneDecide" type="checkbox">无人机自动决策</label><label class="check"><input id="droneCharge" type="checkbox">满电后派遣</label></div><p id="droneDirty"></p><button id="saveDrone">保存无人机设置</button></fieldset></details>
+ <div class="grid"><label class="check"><input id="dronePaused" type="checkbox">暂停无人机</label><label class="check"><input id="droneAuto" type="checkbox">自动选择任务</label><label class="check"><input id="droneClaim" type="checkbox">无人机自动领取</label><label class="check"><input id="droneDecide" type="checkbox">无人机自动决策</label><label class="check"><input id="droneCharge" type="checkbox">满电后派遣</label></div><p id="droneDirty"></p><button id="saveDrone">保存无人机设置</button></fieldset>
+ <details id="wingsSection" hidden><summary>无人机建造进度</summary><pre id="wingsData"></pre><details id="wingsGuide"><summary>各阶段材料参考</summary><pre id="wingsMaterials"></pre></details></details></details>
+ <label class="check"><input id="autoReload" type="checkbox">自动刷新游戏页</label><small id="reloadHelp"></small><p id="dailyCache"></p>
  <details><summary>缓存与日志</summary><pre id="savedSettings"></pre><pre id="cache">未读取</pre><pre id="logs">当前页面暂无运行日志</pre></details>
  </div><p id="notice" class="notice" role="status" aria-live="polite"></p></section>`;
  shell.mount('controls',host);
  const el=id=>shadow.getElementById(id),panel=el('panel');let current=null,stale=false,busy=false,dirtyMerc=false,dirtyDrone=false,timer=null,resultsKey=null,timesKey=null;
+ // An awaited panel action can be the very batch that is stuck on the connection screen.
+ globalThis.Cor3ControlDraftOpen=(connectionWait=false)=>dirtyMerc||dirtyDrone||(!connectionWait&&busy);
  for(const name of globalThis.Cor3JobBatchFactory?.types||[]){const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.checked=true;input.dataset.jobType=name;label.append(input,document.createTextNode(' '+name));shadow.getElementById('jobTypes').append(label);}
  const client=()=>globalThis.Cor3InPageControls;
  function setText(node,value){const text=String(value??'');if(globalThis.Cor3UiLanguage?.setText)globalThis.Cor3UiLanguage.setText(node,text);else if(node.textContent!==text)node.textContent=text;}
- el('version').textContent=globalThis.chrome?.runtime?.getManifest?.().version||'2.3.0';
+ el('version').textContent=globalThis.chrome?.runtime?.getManifest?.().version||'2.3.8';
  const dateFormats=new Map();
  const date=x=>{if(!Number.isFinite(x)||x<=0)return '未读取';const language=globalThis.Cor3UiLanguage?.get?.()==='en'?'en-GB':'zh-CN';let formatter=dateFormats.get(language);if(!formatter){formatter=new Intl.DateTimeFormat(language,{year:'numeric',month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit',hour12:false,timeZone:'Asia/Shanghai'});dateFormats.set(language,formatter);}return formatter.format(new Date(x));};
  const errors={PAGE_JOB_BATCH_RUNNING:'本轮任务正在执行',PAGE_TASK_BUSY:'当前还有操作在运行，请等空闲后再启动',PAGE_QUEUE_UNREAD:'操作状态尚未读取',PAGE_JOB_LOOP_ENABLED:'请先关闭自动完成所有任务，再使用单轮模式',PAGE_JOB_TYPES_EMPTY:'请至少选择一种任务',PAGE_JOB_REFRESH_UNCONFIRMED:'市场刷新尚未确认，本轮没有启动任务',PAGE_JOB_START_UNCONFIRMED:'任务启动未确认，请查看状态',PAGE_CHANGED:'页面或账号已变化，请重新读取',PAGE_ACCOUNT_UNAVAILABLE:'当前页面账号未确认',PAGE_BINDING_UNAVAILABLE:'当前账号绑定尚未确认',PAGE_AUTOMATION_PAUSED:'自动操作已暂停，设置未更改',PAGE_BUDGET_REQUIRED:'启用前请设置费用上限和余额下限',PAGE_BUDGET_INVALID:'请输入有效的非负整数金额',PAGE_DRONE_UNAVAILABLE:'无人机尚未可用，未启用',PAGE_SELECTION_UNAVAILABLE:'选择已不可用，请重新读取远征',PAGE_EQUIPMENT_NOT_OWNED:'未在当前账号配装中找到所选装备',PAGE_EQUIPMENT_PENDING:'已有配装操作等待确认，请勿重复提交',PAGE_LOADOUT_UNAVAILABLE:'未收到新的配装状态',PAGE_ACTION_REJECTED:'插件未接受此操作',PAGE_ACTION_TIMEOUT:'操作等待超时，结果待核对',CENTER_STORE_TIMEOUT:'后台读取超时，正在重试…',PAGE_SAVE_UNCONFIRMED:'设置保存尚未确认，请读取状态核对'};
@@ -427,7 +432,7 @@
   }
   renderResourceRows(mount,rows);
  }
- function enabled(){const write=!!current?.allowed&&!busy&&!stale;shadow.querySelectorAll('[data-refresh],#autoMarket,[data-job-type],#equipHardware,#equipSoftware,#unequipSoftware,#saveMerc,#saveDrone').forEach(x=>x.disabled=!write);el('mercForm').disabled=!write;el('droneForm').disabled=!write;el('hardware').disabled=stale||!current?.loadout.available;el('software').disabled=stale||!current?.loadout.available;el('equipHardware').disabled||=!el('hardware').value;el('equipSoftware').disabled||=!el('software').value;el('unequipSoftware').disabled||=!el('software').value;el('droneEnabled').disabled=!write||(!current?.droneAvailable&&!el('droneEnabled').checked);el('state').disabled=busy;const running=['queued','reconnecting','waiting-minigame','refreshing','starting','waiting-ack','running','finishing','cancelling'].includes(current?.jobs?.batch?.phase);el('runJobs').disabled=!write||running||current?.queue?.active==='auto-jobs'||current?.queue?.queued?.includes('auto-jobs');el('stopJobs').hidden=!['queued','waiting-minigame','refreshing','starting','waiting-ack','running','finishing','cancelling','reconnecting'].includes(current?.jobs?.batch?.phase);el('stopJobs').disabled=!write||current?.jobs?.batch?.phase==='cancelling';for(const choice of choices.values())choice.sync();const hw=current?.loadout?.hardware?.find(x=>x.id===el('hardware').value),sw=current?.loadout?.software?.find(x=>x.id===el('software').value);el('equipHardware').disabled||=hw?.installed===true;el('equipSoftware').disabled||=sw?.installed===true;el('unequipSoftware').disabled||=sw?.installed!==true;const pending=['queued','requested','unconfirmed'].includes(current?.operation?.phase);for(const id of ['equipHardware','equipSoftware','unequipSoftware'])el(id).disabled||=pending;el('equipHardware').hidden=!hw||hw.installed===true;el('equipSoftware').hidden=!sw||sw.installed===true;el('unequipSoftware').hidden=!sw||sw.installed!==true;}
+ function enabled(){const write=!!current?.allowed&&!busy&&!stale;shadow.querySelectorAll('[data-refresh],#autoMarket,#autoReload,[data-job-type],#equipHardware,#equipSoftware,#unequipSoftware,#saveMerc,#saveDrone').forEach(x=>x.disabled=!write);el('mercForm').disabled=!write;el('droneForm').disabled=!write;el('hardware').disabled=stale||!current?.loadout.available;el('software').disabled=stale||!current?.loadout.available;el('equipHardware').disabled||=!el('hardware').value;el('equipSoftware').disabled||=!el('software').value;el('unequipSoftware').disabled||=!el('software').value;el('droneEnabled').disabled=!write||(!current?.droneAvailable&&!el('droneEnabled').checked);el('state').disabled=busy;const running=['queued','reconnecting','waiting-minigame','refreshing','starting','waiting-ack','running','finishing','cancelling'].includes(current?.jobs?.batch?.phase);el('runJobs').disabled=!write||running||current?.queue?.active==='auto-jobs'||current?.queue?.queued?.includes('auto-jobs');el('stopJobs').hidden=!['queued','waiting-minigame','refreshing','starting','waiting-ack','running','finishing','cancelling','reconnecting'].includes(current?.jobs?.batch?.phase);el('stopJobs').disabled=!write||current?.jobs?.batch?.phase==='cancelling';for(const choice of choices.values())choice.sync();const hw=current?.loadout?.hardware?.find(x=>x.id===el('hardware').value),sw=current?.loadout?.software?.find(x=>x.id===el('software').value);el('equipHardware').disabled||=hw?.installed===true;el('equipSoftware').disabled||=sw?.installed===true;el('unequipSoftware').disabled||=sw?.installed!==true;const pending=['queued','requested','unconfirmed'].includes(current?.operation?.phase);for(const id of ['equipHardware','equipSoftware','unequipSoftware'])el(id).disabled||=pending;el('equipHardware').hidden=!hw||hw.installed===true;el('equipSoftware').hidden=!sw||sw.installed===true;el('unequipSoftware').hidden=!sw||sw.installed!==true;}
  function jobProgress(batch){
   const phases={queued:'本轮已排队'+(batch.waitingFor?' · 等待 '+batch.waitingFor:''),reconnecting:'连接正在重新核对；执行结果尚未确认','waiting-minigame':'限时小游戏进行中，市场任务等待',refreshing:'正在刷新市场…',starting:'正在启动任务…','waiting-ack':'等待执行器确认；端点仍由本轮占用',finishing:'正在核对本轮结果',running:batch.leaseExpired?'端点占用已超时，等待本轮结束确认':'正在执行',cancelling:'正在停止，等待当前步骤结束',complete:batch.summary&&(batch.summary.failed||batch.summary.skipped)?'本轮已结束，请核对明细':batch.unreadMarkets?.length?'本轮已结束，部分市场未读取':batch.ready?'本轮已完成，可继续主线':'本轮已完成，等待当前操作结束',cancelled:batch.ready?'本轮已停止，可继续其他事项':'已停止，等待当前操作结束',blocked:errors[batch.code]||'本轮未确认，请查看状态',unconfirmed:'部分结果未确认，请核对任务与日志'};
   return (phases[batch.phase]||batch.phase)+(batch.total?' · '+(batch.processed??batch.done)+' / '+batch.total:'')+(batch.current?' · '+batch.current:'')+(batch.summary?' · 成功 '+batch.summary.done+' / 失败 '+batch.summary.failed+' / 跳过 '+batch.summary.skipped:'');
@@ -444,7 +449,16 @@
   if(batch?.reason)setText(el('notice'),{AUTO_JOB_ENGINE_UNAVAILABLE:'任务脚本未就绪；本轮未启动，可在状态日志核对',PAGE_AUTOMATION_PAUSED:'页面许可已停止；本轮未启动'}[batch.reason]||'执行器启动未确认');
   shell.setTaskStatus?.(batch);
  }
- const queueText=queue=>queue?`执行：${queue.active||'空闲'} · 等待：${queue.queued.length}\n端点：${queue.owner||'空闲'}${queue.blocked?' · '+queue.blocked:''}`:'操作状态未读取';
+ const pageWaitLabels={
+  'terminal-observing':'终端正在连接，持续 3 分钟无进展后刷新','terminal-off':'终端正在连接，自动刷新已关闭',
+  'ice-observing':'ICE Wall 正在连接，持续 3 分钟无进展后刷新','ice-off':'ICE Wall 正在连接，自动刷新已关闭','roster-held-long':'远征名单读取持续超时，已保留当前操作或排队任务',
+  'roster-observing':'远征名单读取已超时，观察中','roster-held':'远征名单读取已超时，保留当前任务','roster-off':'远征名单读取已超时，自动刷新已关闭'
+ };
+ const queueText=queue=>{
+  if(!queue)return '操作状态未读取';
+  const wait=pageWaitLabels[queue.pageWait];
+  return `执行：${queue.active||'空闲'} · 等待：${queue.queued.length}\n端点：${queue.owner||'空闲'}${queue.blocked?' · '+queue.blocked:''}`+(wait?'\n'+(globalThis.Cor3UiLanguage?.text?.(wait)||wait):'');
+ };
  function renderSolverStatus(){const three=globalThis.Cor3ThreeAutomation;setText(el('threeState'),three?'解密许可：'+(three.allowed()?'开':'等待')+' · '+(three.status()?.code||'SOLVER_STARTING'):'解密许可未读取');}
  function sampleStatus(){
   const status=client()?.readStatus?.();
@@ -466,14 +480,69 @@
   setText(el('version'),view.version);setText(el('identity'),view.scope.accountId+' · '+(view.allowed?'页面许可开':'自动操作暂停'));
   setText(el('queue'),queueText(view.queue));
   if(el('loadoutSection').open)renderLoadout(view);else if(changed){options(el('hardware'),[],'未读取');options(el('software'),[],'未读取');renderEquipment(null);}renderSystemUsage(view);setText(el('loadoutAt'),'配装更新：'+date(view.loadout.at));setText(el('operation'),view.operation?view.operation.phase+' · '+view.operation.details:'');
-  if(!dirtyMerc){const m=view.merc;el('mercEnabled').checked=m.enabled===true;el('mercClaim').checked=m.autoClaim!==false;el('mercDecide').checked=m.autoDecide!==false;el('mercUsol').checked=m.autoChooseUsolFirst!==false;el('mercCheapest').checked=m.autoChooseMerc===true;options(el('mercenary'),view.mercenaries,'自动选择');options(el('destination'),view.locations,'按插件规则选择');el('mercenary').value=m.mercenaryId||'';el('destination').value=m.locationConfigId||'';el('maxCost').value=Number.isSafeInteger(m.maxMercCost)?String(m.maxMercCost):'';el('minCredits').value=Number.isSafeInteger(m.minCredits)?String(m.minCredits):'';}
+  if(!dirtyMerc){const m=view.merc;el('mercInterval').value=m.checkIntervalMinutes||30;el('mercEnabled').checked=m.enabled===true;el('mercClaim').checked=m.autoClaim!==false;el('mercDecide').checked=m.autoDecide!==false;el('mercUsol').checked=m.autoChooseUsolFirst!==false;el('mercCheapest').checked=m.autoChooseMerc===true;options(el('mercenary'),view.mercenaries,'自动选择');options(el('destination'),view.locations,'按插件规则选择');el('mercenary').value=m.mercenaryId||'';el('destination').value=m.locationConfigId||'';el('maxCost').value=Number.isSafeInteger(m.maxMercCost)?String(m.maxMercCost):'';el('minCredits').value=Number.isSafeInteger(m.minCredits)?String(m.minCredits):'';}
   if(!dirtyDrone){const d=view.drone;el('droneEnabled').checked=d.enabled===true;el('dronePaused').checked=d.paused===true;el('droneAuto').checked=d.autoChooseLocation!==false;el('droneClaim').checked=d.autoClaim!==false;el('droneDecide').checked=d.autoDecide!==false;el('droneCharge').checked=d.fullChargeOnly===true;}
   setText(el('mercDirty'),dirtyMerc?'有未保存修改':'');setText(el('droneDirty'),dirtyDrone?'有未保存修改':'');const states={ready:'已读取',empty:'已读取，列表为空',unread:'未读取'};setText(el('mercAvailability'),'CORE：'+states[view.readStatus.coreMercenaries]+' · USOL：'+states[view.readStatus.usolMercenaries]);
-  setText(el('droneAvailability'),view.readStatus.drone==='ready'?'无人机已读取，可用':view.readStatus.drone==='none'?'已读取，当前无无人机；解锁状态未确认':view.readStatus.drone==='error'?'无人机读取失败：'+view.readStatus.droneError:'无人机未读取');
+  const droneLabel=view.readStatus.drone==='ready'?'无人机已读取，可用':view.readStatus.drone==='none'?'已读取，当前无无人机；解锁状态未确认':view.readStatus.drone==='error'?'无人机读取失败：'+view.readStatus.droneError:'无人机未读取';
+  setText(el('droneAvailability'),(globalThis.Cor3UiLanguage?.text?.(droneLabel)||droneLabel)+(view.cache.droneDataUpdatedAt?' · '+date(view.cache.droneDataUpdatedAt):''));
+  el('autoReload').checked=view.autoReload!==false;
+  setText(el('reloadHelp'),'后台空闲满 6 小时，或确认页面卡住时刷新');
+  setText(el('mercRetry'),view.mercRetryAt>Date.now()?'CR · '+date(view.mercRetryAt):'');
+  setText(el('dailyCache'),view.dailyClaim==null?'Daily · —':'Daily · '+tDaily(view.dailyClaim)+' · '+date(view.cache.dailyOpsUpdatedAt));
+  renderWings(view,changed);
+  try{
+   const last=JSON.parse(sessionStorage.getItem('cor3.relay.reload.'+view.scope.accountId+'.last')||'null');
+   if(last && Number.isFinite(last.at)){
+    const names={'idle':'后台空闲刷新','startup-read':'启动读取恢复','ice-empty':'ICE Wall 等待超时','terminal-connect':'终端连接超时','roster-read':'远征名单读取超时','equipment-unconfirmed':'配装回执超时'};
+    if(names[last.reason])el('reloadHelp').textContent+=' · '+(globalThis.Cor3UiLanguage?.text?.(names[last.reason])||names[last.reason])+' · '+date(last.at);
+   }
+  }catch{}
   const flag=x=>x===true?'开':x===false?'关':'未设置',m=view.retainedSettings.merc,d=view.retainedSettings.drone;
   setText(el('savedSettings'),'Auto Update Markets：'+flag(view.defaults.markets)+' · Auto Daily：'+flag(view.defaults.daily)+'\n费用限制：'+flag(m.applyMercCostLimiter)+' · 上限：'+(m.maxMercCost??'未设置')+' CR\n余额保护：'+flag(m.pauseBelowCredits)+' · 下限：'+(m.minCredits??'未设置')+' CR\n远征保险：'+flag(m.hasInsurance)+' · 无人机维修：'+flag(d.repairEnabled)+' · 维修失败暂停：'+flag(d.pauseOnRepairFail));
   const labels={marketDataUpdatedAt:'HOME',darkMarketDataUpdatedAt:'D4RK',soyuzMarketDataUpdatedAt:'SOYUZ',usolMarketDataUpdatedAt:'USOL',expeditionsDataUpdatedAt:'远征',droneDataUpdatedAt:'无人机',dailyOpsUpdatedAt:'Daily'};setText(el('cache'),Object.entries(view.cache).map(([k,v])=>labels[k]+' '+date(v)).join('\n'));setText(el('logs'),view.logs.map(x=>date(x.at)+' '+x.code+' '+x.message).join('\n')||'当前页面暂无运行日志');enabled();
  }
+ function tDaily(claimed){return globalThis.Cor3UiLanguage?.text?.(claimed?'今日已领取':'今日未领取')||(claimed?'今日已领取':'今日未领取');}
+ function renderWings(view,changed=false){
+  const section=el('wingsSection'),guide=el('wingsGuide');
+  const data=view?.wings, page=data?.page;
+  const history=Array.isArray(data?.history?.items)?data.history.items.filter(i=>i&&Number.isInteger(i.step)):[];
+  const hasPage=Number.isInteger(page?.currentStep)&&page.currentStep>0;
+  section.hidden=!hasPage&&!history.length;
+  if(changed||section.hidden){
+   section.open=false;guide.open=false;setText(el('wingsData'),'');
+  }
+  if(section.hidden||!section.open)return;
+  const active=history.find(i=>i.status==='ACTIVE');
+  const retired=history.some(i=>i.step===page?.currentStep&&['COMPLETED','DONE'].includes(i.status));
+  const showPage=hasPage&&!(data.history?.at>=page.at&&(retired||(active&&active.step!==page.currentStep)));
+  const lines=[];
+  if(showPage){
+   lines.push('#'+page.currentStep+' · '+(page.status||'—')+' · '+date(page.at));
+   const subtasks=Array.isArray(page.currentStepSubtasks)?page.currentStepSubtasks:[];
+   for(const task of subtasks){
+    if(!task?.title)continue;
+    lines.push(task.title+' · '+(task.status||'—')+(task.buyCost?' · '+task.buyCost+' CR':''));
+    for(const item of Array.isArray(task.barterItems)?task.barterItems:[]){
+     if(item?.title)lines.push('  '+item.title+'   '+(item.availableQuantity??'—')+' / '+(item.requiredQuantity??'—'));
+    }
+   }
+  }
+  if(history.length){
+   lines.push(date(data.history.at));
+   for(const item of history)lines.push('#'+item.step+' '+(item.title||'—')+' · '+(item.status||'—')+' · '+(item.completedSubtasks??'—')+'/'+(item.totalSubtasks??'—'));
+  }
+  setText(el('wingsData'),lines.join('\\n'));
+  guide.hidden=!globalThis.Cor3PageLifetime?.wingsMaterials?.length;
+ }
+ el('wingsGuide').addEventListener('toggle',()=>{
+  if(!el('wingsGuide').open || el('wingsMaterials').textContent)return;
+  const stages=globalThis.Cor3PageLifetime?.wingsMaterials || [];
+  el('wingsMaterials').textContent=stages.map(s=>['#'+s.step+'  '+s.title,...s.items.map(i=>'  '+i.name+' × '+i.quantity)].join('\\n')).join('\\n\\n');
+ });
+ el('wingsSection').addEventListener('toggle',()=>{
+  if(el('wingsSection').open)renderWings(samePageScope(current?.scope,currentScope())?current:null);
+ });
+ el('autoReload').addEventListener('change',e=>void act(e,s=>client().saveAutoReload(el('autoReload').checked,s)));
  function currentScope(){return globalThis.Cor3CenterIdentity?.snapshot()||null;}
  function syncJobTypes(jobs){
   if(!jobs)return;
@@ -488,8 +557,14 @@
  }
  function showReadError(e){
    const local=globalThis.Cor3CenterIdentity?.snapshot(),sameDocument=local&&current&&local.accountId===current.scope.accountId&&local.documentId===current.scope.documentId;
-   if(sameDocument){syncJobTypes(current.jobs);stale=true;shell.setTaskStatus?.({...current.jobs?.batch,phase:'reconnecting'});setText(el('identity'),current.scope.accountId+' · 连接正在重新核对');setText(el('queue'),'操作状态暂未确认；保留上次读数\n'+(globalThis.Cor3UiLanguage?.source(el('queue'))||el('queue').textContent).replace(/^操作状态暂未确认；保留上次读数\n/,''));setText(el('jobProgress'),'最近读到：'+(globalThis.Cor3UiLanguage?.source(el('jobProgress'))||el('jobProgress').textContent).replace(/^最近读到：/,''));setText(el('notice'),'正在自动恢复读取，请勿重复启动或刷新游戏');enabled();return;}
-   stale=true;current=null;setText(el('notice'),'');shell.setTaskStatus?.(null);setText(el('jobProgress'),'当前进度未确认');el('jobBar').hidden=true;el('resultDetails').hidden=true;resultsKey=null;timesKey=null;el('jobResults').replaceChildren();el('marketTimes').replaceChildren();setText(el('identity'),errors[e.code||e.message]||'当前页面状态未读取');setText(el('autoRead'),'等待当前页面许可后自动读取');setText(el('mercAvailability'),'雇佣兵未读取');setText(el('droneAvailability'),'无人机未读取');setText(el('savedSettings'),'保存设置未读取');setText(el('queue'),'操作状态未读取');setText(el('loadoutAt'),'配装更新：未读取');options(el('hardware'),[],'未读取');options(el('software'),[],'未读取');renderEquipment(null);renderSystemUsage(null);typeSelection.hardware.clear();typeSelection.software.clear();el('softwareTypes').replaceChildren();filterKeys.software='';options(el('mercenary'),[],'未读取');options(el('destination'),[],'未读取');el('maxCost').value='';el('minCredits').value='';shadow.querySelectorAll('input[type=checkbox]').forEach(x=>x.indeterminate=true);setText(el('logs'),'当前页面日志未读取');setText(el('operation'),'');enabled();
+   if((e.code||e.message)==='PAGE_BINDING_UNAVAILABLE'&&local?.documentId)globalThis.Cor3CenterIdentity?.recheckBinding?.(local.documentId);
+   if(sameDocument){syncJobTypes(current.jobs);setText(el('autoMarketState'),'正在核对账号，显示上次读取的设置');stale=true;shell.setTaskStatus?.({...current.jobs?.batch,phase:'reconnecting'});setText(el('identity'),current.scope.accountId+' · 连接正在重新核对');setText(el('queue'),'操作状态暂未确认；保留上次读数\n'+(globalThis.Cor3UiLanguage?.source(el('queue'))||el('queue').textContent).replace(/^操作状态暂未确认；保留上次读数\n/,''));setText(el('jobProgress'),'最近读到：'+(globalThis.Cor3UiLanguage?.source(el('jobProgress'))||el('jobProgress').textContent).replace(/^最近读到：/,''));setText(el('notice'),'正在自动恢复读取，请勿重复启动或刷新游戏');enabled();return;}
+   stale=true;current=null;dirtyMerc=false;dirtyDrone=false;renderWings(null);
+   setText(el('autoMarketState'),'账号确认后显示自动调度状态');
+   const reason=e.code||e.message, identityCode=globalThis.Cor3CenterIdentity?.status?.()?.code;
+   const detail=['PAGE_ACCOUNT_UNAVAILABLE','PAGE_BINDING_UNAVAILABLE'].includes(reason)&&/^CENTER_[A-Z_]+$/.test(identityCode||'')&&identityCode!=='CENTER_CONNECTED'?identityCode:'';
+   const identityMessage=errors[reason]||'当前页面状态未读取';
+   for(const id of ['dailyCache','mercRetry','reloadHelp','mercDirty','droneDirty'])setText(el(id),'');setText(el('notice'),'');shell.setTaskStatus?.(null);setText(el('jobProgress'),'当前进度未确认');el('jobBar').hidden=true;el('resultDetails').hidden=true;resultsKey=null;timesKey=null;el('jobResults').replaceChildren();el('marketTimes').replaceChildren();setText(el('identity'),detail?identityMessage+' · '+detail:identityMessage);setText(el('autoRead'),'等待当前页面许可后自动读取');setText(el('mercAvailability'),'雇佣兵未读取');setText(el('droneAvailability'),'无人机未读取');setText(el('savedSettings'),'保存设置未读取');setText(el('queue'),'操作状态未读取');setText(el('loadoutAt'),'配装更新：未读取');options(el('hardware'),[],'未读取');options(el('software'),[],'未读取');renderEquipment(null);renderSystemUsage(null);typeSelection.hardware.clear();typeSelection.software.clear();el('softwareTypes').replaceChildren();filterKeys.software='';options(el('mercenary'),[],'未读取');options(el('destination'),[],'未读取');el('maxCost').value='';el('minCredits').value='';el('mercInterval').value='';shadow.querySelectorAll('input[type=checkbox]').forEach(x=>{x.checked=false;x.indeterminate=true;});setText(el('logs'),'当前页面日志未读取');setText(el('operation'),'');enabled();
  }
  const reader=createViewReader({
   scope:currentScope,visible:()=>!panel.hidden,apply:applyView,failed:showReadError,
@@ -585,7 +660,7 @@
  for(const name of ['hardware','software'])el(name).addEventListener('change',()=>{typeSelection[name].set(loadoutFilter[name],el(name).value);renderEquipment(current);enabled();});
  for(const kind of ['hardware','software'])el(kind+'Types').addEventListener('click',event=>{const button=event.target.closest('[data-loadout-type]');if(!current||!button||!el(kind+'Types').contains(button))return;typeSelection[kind].set(loadoutFilter[kind],el(kind).value);loadoutFilter[kind]=button.dataset.loadoutType;for(const choice of choices.values())choice.close?.();renderLoadout(current);enabled();});
  for(const event of ['input','change']){el('mercForm').addEventListener(event,()=>{dirtyMerc=true;el('mercDirty').textContent='有未保存修改';});el('droneForm').addEventListener(event,()=>{dirtyDrone=true;el('droneDirty').textContent='有未保存修改';enabled();});}
- el('saveMerc').addEventListener('click',e=>void act(e,async scope=>{const patch={enabled:el('mercEnabled').checked,autoClaim:el('mercClaim').checked,autoDecide:el('mercDecide').checked,autoChooseUsolFirst:el('mercUsol').checked,autoChooseMerc:el('mercCheapest').checked,mercenaryId:el('mercenary').value||null,locationConfigId:el('destination').value||null};if(patch.enabled){patch.maxMercCost=el('maxCost').valueAsNumber;patch.minCredits=el('minCredits').valueAsNumber;patch.applyMercCostLimiter=true;patch.pauseBelowCredits=true;}const result=await client().saveMerc(patch,scope);dirtyMerc=false;return result;}));
+ el('saveMerc').addEventListener('click',e=>void act(e,async scope=>{const patch={checkIntervalMinutes:el('mercInterval').valueAsNumber,enabled:el('mercEnabled').checked,autoClaim:el('mercClaim').checked,autoDecide:el('mercDecide').checked,autoChooseUsolFirst:el('mercUsol').checked,autoChooseMerc:el('mercCheapest').checked,mercenaryId:el('mercenary').value||null,locationConfigId:el('destination').value||null};if(patch.enabled){patch.maxMercCost=el('maxCost').valueAsNumber;patch.minCredits=el('minCredits').valueAsNumber;patch.applyMercCostLimiter=true;patch.pauseBelowCredits=true;}const result=await client().saveMerc(patch,scope);dirtyMerc=false;return result;}));
  el('saveDrone').addEventListener('click',e=>void act(e,async scope=>{const result=await client().saveDrone({enabled:el('droneEnabled').checked,paused:el('dronePaused').checked,autoClaim:el('droneClaim').checked,autoDecide:el('droneDecide').checked,autoChooseLocation:el('droneAuto').checked,fullChargeOnly:el('droneCharge').checked},scope);dirtyDrone=false;return result;}));
  enabled();sampleStatus();const statusTimer=setInterval(sampleStatus,5000);
  window.addEventListener('pagehide',()=>{reader.invalidate();clearTimeout(timer);clearInterval(statusTimer);host.remove();},{once:true});

@@ -8,7 +8,7 @@
 本项目是 **SaltApocalypse/cor3-helper** 的独立公开 fork，原始项目为
 **Femtoce11/cor3-helper**。保留上游历史与版权声明，不代表 COR3 官方或 Salta 发布。
 
-我们的 **2.3.0** 兼容运行层位于 [`relay/`](relay/README.md)；上游 **2.0.5**
+我们的 **2.3.8** 兼容运行层位于 [`relay/`](relay/README.md)；上游 **2.0.5**
 TypeScript 重写保留在 `src/`，可单独构建。两者关系与技术债见
 [架构记录](docs/architecture/relay-runtime-import.md)。这里仅发布 **Chrome 和 Edge**。
 
@@ -35,7 +35,7 @@ npm run relay:build
 
 ## 2.3 版
 
-[查看 2.3.0 更新说明](relay/RELEASE-2.3.0.md)
+[查看 2.3.8 更新说明](relay/RELEASE-2.3.8.md)
 
 - 保留浏览器账号绑定、账号和文档隔离、设置写入队列，显式关闭的设置仍生效。
 - 三个解密功能使用当前页面的许可，无需等待账号识别后再接管小游戏。

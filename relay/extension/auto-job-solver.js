@@ -140,7 +140,7 @@
     });
   }
   function isHackMinigameOpen() {
-    return !!(document.querySelector('[data-component-name="IceWallBreakApplication"]') || document.querySelector('[data-sentry-component="IceWallBreakApplication"]') || document.querySelector('[data-component-name="WallBoard"]') || document.querySelector('[data-sentry-component="ConfigHackApplication"]') || document.querySelector('[data-component-name="SimpleDecryptApplication"]') || document.querySelector('[data-sentry-component="SimpleDecryptApplication"]'));
+    return globalThis.Cor3PageLifetime.timedWindows().length>0;
   }
   function waitForHackMinigameClose(waitMs) {
     waitMs = waitMs || 12e4;
@@ -261,19 +261,12 @@
       var elapsed = 0;
       var interval = 500;
       function poll() {
-        var iceWall = document.querySelector('[data-component-name="IceWallBreakApplication"]') || document.querySelector('[data-sentry-component="IceWallBreakApplication"]');
-        if (iceWall) {
-          resolve("icewall");
-          return;
-        }
-        var decrypt = document.querySelector('[data-component-name="DecryptionApplication"]') || document.querySelector('[data-sentry-component="DecryptionApplication"]');
-        if (decrypt) {
-          resolve("decrypt");
-          return;
-        }
-        var simpleDecrypt = document.querySelector('[data-component-name="SimpleDecryptionApplication"]') || document.querySelector('[data-sentry-component="SimpleDecryptionApplication"]');
-        if (simpleDecrypt) {
-          resolve("simple-decrypt");
+        const open = globalThis.Cor3PageLifetime.timedWindows();
+        if (open.length) {
+          const name = node => node.getAttribute('data-component-name') || node.getAttribute('data-sentry-component') || '';
+          if (open.some(node => name(node)==='IceWallBreakApplication')) resolve('icewall');
+          else if (open.some(node => /Simple/.test(name(node)))) resolve('simple-decrypt');
+          else resolve('timed-game');
           return;
         }
         elapsed += interval;
@@ -286,37 +279,25 @@
       poll();
     });
   }
-  function isIceWallAwaitingStuck() {
-    var app = document.querySelector('[data-component-name="IceWallBreakApplication"]') || document.querySelector('[data-sentry-component="IceWallBreakApplication"]');
-    if (!app) return false;
-    var emptyStage = app.querySelector('[data-component-name="EmptyStage"]');
-    if (!emptyStage) return false;
-    var text = (emptyStage.textContent || "").trim();
-    return text.indexOf("Awaiting secure channel") >= 0;
+  function waitingIceShell() {
+    const policy = globalThis.Cor3PageLifetime;
+    const open = policy.timedWindows();
+    return open.length === 1 && policy.emptyIce(open[0]) ? open[0] : null;
   }
-  function waitForIceWallStuckClear(logFn, maxWaitMs) {
-    maxWaitMs = maxWaitMs || 1e4;
-    return new Promise(function(resolve) {
-      if (!isIceWallAwaitingStuck()) {
-        resolve({ stuck: false, reloaded: false });
-        return;
-      }
-      logFn('ICE Wall stuck on "Awaiting secure channel\u2026" \u2014 waiting up to ' + maxWaitMs / 1e3 + "s for it to clear");
-      var elapsed = 0;
-      var interval = 500;
+  function waitForIceWallStuckClear(logFn, maxWaitMs = 180000) {
+    const shell = waitingIceShell();
+    if (!shell) return Promise.resolve({ held: false });
+    logFn('ICE Wall is waiting for its secure channel');
+    return new Promise((resolve, reject) => {
+      let since = performance.now(), last = since;
       function poll() {
-        if (!isIceWallAwaitingStuck()) {
-          logFn('ICE Wall "Awaiting secure channel\u2026" screen cleared');
-          resolve({ stuck: true, reloaded: false });
-          return;
-        }
-        elapsed += interval;
-        if (elapsed >= maxWaitMs) {
-          logFn("ICE Wall still stuck after " + maxWaitMs / 1e3 + "s \u2014 page reload required to clear stuck UI", "warn");
-          resolve({ stuck: true, reloaded: true });
-          return;
-        }
-        safeTimeout(poll, interval);
+        if (state.abortFlag || !masterAllowed()) { reject(new Error('Aborted')); return; }
+        if (waitingIceShell() !== shell) { resolve({ held: false }); return; }
+        const now = performance.now();
+        if (now - last > 95000) since = now;
+        last = now;
+        if (now - since >= maxWaitMs) { resolve({ held: true }); return; }
+        safeTimeout(poll, 2000);
       }
       poll();
     });
@@ -3049,18 +3030,18 @@
             var minigameType = await waitForMinigameWindow(5e3);
             if (minigameType === "icewall") {
               log("ICE Wall minigame detected \u2014 checking for stuck state...", "warn");
-              var iceWallResult = await waitForIceWallStuckClear(log, 1e4);
-              if (iceWallResult.reloaded) {
+              var iceWallResult = await waitForIceWallStuckClear(log);
+              if (iceWallResult.held) {
                 job.status = "skipped";
                 job.error = errText;
                 updateTracker();
                 saveCompletedResultsIncremental();
                 state._currentJobRef = null;
-                log("Requesting page reload to clear ICE Wall stuck UI \u2014 locked job: " + job.name, "warn");
+                log("Waiting for the page health check \u2014 locked job: " + job.name, "warn");
                 window.postMessage({
-                  type: "COR3_AUTOJOB_ICE_WALL_RELOAD",
+                  type: "COR3_AUTOJOB_ICE_WALL_RELOAD",runTicket:state.runTicket,
                   lockedJob: { jobId: job.jobId, lockExpiresAt: job.lockExpiresAt || null }
-                }, "*");
+                }, location.origin);
                 state.running = false;
                 return;
               }

@@ -5,6 +5,7 @@ import { buildSync } from 'esbuild';
 import { runtimeRoot } from './build.ts';
 
 export function compileLanguage(): void {
+    buildSync({entryPoints:[join(runtimeRoot,'src','page-lifetime.ts')],outfile:join(runtimeRoot,'extension','page-lifetime.js'),bundle:true,platform:'browser',format:'iife',target:['chrome128']});
     const popup = readFileSync(join(runtimeRoot, 'extension', 'popup.js'), 'utf8');
     function literal(name: string, close: string): unknown {
         const marker = `  var ${name} = `;

@@ -177,3 +177,18 @@ store guard as settings. Each subscriber materializes its own log copy only if
 it requests that key. Database maintenance uses bounded timestamp-index reads
 and trims by primary key atomically; aborts settle the pending operation.
 The upstream selection and mapping ports are documented in relay/UPSTREAM-REVIEW.md.
+
+## Relay 2.3.8 page recovery
+
+A terminal or ICE Wall connection-only screen must remain on the same account,
+document and window for three minutes before it is eligible for recovery.
+The watchdog checks page permissions and independent Daily, maintenance and
+valuable-item activity again after asynchronous page verification. The
+stalled market batch can resume from its existing receipt after a reload.
+The last connection recovery is kept in tab session storage and enforces a
+ten-minute interval between connection reloads across documents. Routine
+idle and read recovery keep their existing limits.
+
+The ICE Wall solver observes rendered board changes and the round counter.
+Timers remain a fallback for deadlines. The solver confirms a round advance
+before progressing and does not replay clicks when the outcome is unknown.
